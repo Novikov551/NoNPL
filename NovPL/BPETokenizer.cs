@@ -59,12 +59,12 @@ public class BPETokenizer : IBPETokenizer
         MergePairs();
     }
 
-    private async Task ReadTXTDatasetAsync(string filePath, int maxConcurrent = 4, int chunkSize = 4096)
+    private async Task<ConcurrentDictionary<int, string>> ReadTXTDatasetAsync(string filePath, string tokenSeparator, int maxConcurrent = 4, int chunkSize = 4096)
     {
         var semaphore = new SemaphoreSlim(maxConcurrent);
         var fileInfo = new FileInfo(filePath);
-        long fileSize = fileInfo.Length;
-        int totalChunks = (int)Math.Ceiling((double)fileSize / chunkSize);
+        var fileSize = fileInfo.Length;
+        var totalChunks = (int)Math.Ceiling((double)fileSize / chunkSize);
 
         var rawChunks = new ConcurrentDictionary<int, string>();
         var tasks = new List<Task>();
@@ -92,9 +92,9 @@ public class BPETokenizer : IBPETokenizer
                         fileStream.Seek(startPosition, SeekOrigin.Begin);
                         var bytesRead = await fileStream.ReadAsync(buffer, 0, currentChunkSize);
 
-                        var chunkAsString = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-
-                        rawChunks[chunkIndex] = chunkAsString;
+                        //Прочитали чанк
+                        var chunk = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                        rawChunks[chunkIndex] = chunk;
                     }
                 }
                 finally
@@ -105,6 +105,8 @@ public class BPETokenizer : IBPETokenizer
         }
 
         await Task.WhenAll(tasks);
+
+        return rawChunks;
     }
 
     private void MergePairs()
@@ -190,9 +192,9 @@ public class BPETokenizer : IBPETokenizer
             for (var e = 1; e < preToken.Key.Count(); e++)
             {
                 if (preToken.Key[e].Count() > 1)
-                { 
+                {
                 }
-                var bytePair = (preToken.Key[e - 1],  preToken.Key[e]);
+                var bytePair = (preToken.Key[e - 1], preToken.Key[e]);
 
                 if (bytePairsFrequences.ContainsKey(bytePair))
                 {
@@ -315,3 +317,89 @@ public class BPETokenizer : IBPETokenizer
         }
     }
 }
+
+//TODO на подумать
+
+//private async Task<ConcurrentDictionary<int, string>> ReadTXTDatasetAsync(
+//    string filePath, string tokenSeparator, int maxConcurrent = 4, int chunkSize = 4096)
+//{
+//    var semaphore = new SemaphoreSlim(maxConcurrent);
+//    var fileInfo = new FileInfo(filePath);
+//    var fileSize = fileInfo.Length;
+//    var totalChunks = (int)Math.Ceiling((double)fileSize / chunkSize);
+
+//    var rawChunks = new ConcurrentDictionary<int, (string chunk, bool isProcessed)>();
+//    var lockObj = new object();
+    
+//    var tasks = new List<Task>();
+//    for (int i = 0; i < totalChunks; i++)
+//    {
+//        int chunkIndex = i;
+//        await semaphore.WaitAsync();
+
+//        tasks.Add(Task.Run(async () =>
+//        {
+//            try
+//            {
+//                var startPosition = chunkIndex * (long)chunkSize;
+//                var currentChunkSize = (int)Math.Min(chunkSize, fileSize - startPosition);
+
+//                using (var fileStream = new FileStream(filePath,
+//                    FileMode.Open, FileAccess.Read, FileShare.Read, 4096, true))
+//                {
+//                    var buffer = new byte[currentChunkSize];
+//                    fileStream.Seek(startPosition, SeekOrigin.Begin);
+//                    var bytesRead = await fileStream.ReadAsync(buffer, 0, currentChunkSize);
+
+//                    var chunk = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    
+//                    // Сохраняем чанк
+//                    rawChunks[chunkIndex] = (chunk, false);
+                    
+//                    // Ждем предыдущий чанк и обрабатываем
+//                    while (chunkIndex > 0 && 
+//                           (!rawChunks.TryGetValue(chunkIndex - 1, out var prev) || !prev.isProcessed))
+//                    {
+//                        await Task.Delay(10); // Короткая пауза
+//                    }
+                    
+//                    // Теперь можем обработать с учетом предыдущего чанка
+//                    lock (lockObj)
+//                    {
+//                        // Получаем предыдущий чанк
+//                        if (chunkIndex > 0 && rawChunks.TryGetValue(chunkIndex - 1, out var previous))
+//                        {
+//                            var processedChunk = ProcessWithPrevious(previous.chunk, chunk);
+//                            rawChunks[chunkIndex] = (processedChunk, true);
+//                        }
+//                        else
+//                        {
+//                            rawChunks[chunkIndex] = (chunk, true);
+//                        }
+//                    }
+//                }
+//            }
+//            finally
+//            {
+//                semaphore.Release();
+//            }
+//        }));
+//    }
+
+//    await Task.WhenAll(tasks);
+    
+//    // Извлекаем только обработанные чанки
+//    var result = new SortedDictionary<int, string>();
+//    foreach (var kv in rawChunks.Where(x => x.Value.isProcessed))
+//    {
+//        result[kv.Key] = kv.Value.chunk;
+//    }
+    
+//    return new ConcurrentDictionary<int, string>(result);
+//}
+
+//private string ProcessWithPrevious(string previousChunk, string currentChunk)
+//{
+//    // Ваша логика объединения чанков
+//    return previousChunk + currentChunk; // Пример
+//}
