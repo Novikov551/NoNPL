@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "NovPL": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
