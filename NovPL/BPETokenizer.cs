@@ -1,4 +1,6 @@
 ﻿using NoNPL.Comparers;
+using NoNPL.DataReaders;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
@@ -15,8 +17,6 @@ public class BPETokenizer : IBPETokenizer
     private Dictionary<string, int> _strPreTokens;
     //Для дебага
     private Dictionary<int, string> _strVocab;
-
-    private DatasetReader _datasetReader;
 
     private readonly Regex _pattern;
 
@@ -42,7 +42,6 @@ public class BPETokenizer : IBPETokenizer
         _vocab = new();
         _reversedVocab = new(_byteArraySequenceEqualityComparer);
         _strVocab = new();
-        _datasetReader = new("NoNPL.Datasets.TinyStories-valid.txt");
         _merges = new();
         _preTokens = new(_listByteArraySequenceComparer);
         _strPreTokens = new();
@@ -58,6 +57,54 @@ public class BPETokenizer : IBPETokenizer
 
         //Делаем слияния
         MergePairs();
+    }
+
+    private async Task ReadTXTDatasetAsync(string filePath, int maxConcurrent = 4, int chunkSize = 4096)
+    {
+        var semaphore = new SemaphoreSlim(maxConcurrent);
+        var fileInfo = new FileInfo(filePath);
+        long fileSize = fileInfo.Length;
+        int totalChunks = (int)Math.Ceiling((double)fileSize / chunkSize);
+
+        var rawChunks = new ConcurrentDictionary<int, string>();
+        var tasks = new List<Task>();
+        for (int i = 0; i < totalChunks; i++)
+        {
+            int chunkIndex = i;
+
+            await semaphore.WaitAsync();
+
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    var startPosition = chunkIndex * (long)chunkSize;
+                    var currentChunkSize = (int)Math.Min(chunkSize, fileSize - startPosition);
+
+                    using (var fileStream = new FileStream(filePath,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.Read,
+                        4096,
+                        true))
+                    {
+                        var buffer = new byte[currentChunkSize];
+                        fileStream.Seek(startPosition, SeekOrigin.Begin);
+                        var bytesRead = await fileStream.ReadAsync(buffer, 0, currentChunkSize);
+
+                        var chunkAsString = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+
+                        rawChunks[chunkIndex] = chunkAsString;
+                    }
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks);
     }
 
     private void MergePairs()
@@ -181,7 +228,7 @@ public class BPETokenizer : IBPETokenizer
     //Нужно пройтись по пре токенам содержащим самую частую пару байт и слить в этих претокенах эту пару
 
 
-    private void PreTokenize()
+    private void PreTokenize(string )
     {
         //TODO список пар сделать на уровне пре-токенизации
 

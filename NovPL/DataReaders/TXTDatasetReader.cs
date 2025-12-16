@@ -1,15 +1,15 @@
 ﻿using System.Reflection;
 using System.Text;
-namespace NoNPL;
+namespace NoNPL.DataReaders;
 
-public class DatasetReader : IDisposable//TODO
+public class TXTDatasetReader : IDisposable//TODO
 {
     private readonly StreamReader _reader;
     private bool _disposed;
     private const string Separator = "<|endoftext|>";
     private readonly char[] _separatorChars = Separator.ToCharArray();
 
-    public DatasetReader(string resourceName, Assembly assembly = null)
+    public TXTDatasetReader(string resourceName, Assembly assembly = null)
     {
         if (string.IsNullOrEmpty(resourceName))
             throw new ArgumentNullException(nameof(resourceName));
