@@ -1,156 +1,197 @@
-﻿using System.Reflection;
+﻿using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 namespace NoNPL.DataReaders;
 
-public class TXTDatasetReader : IDisposable//TODO
+public class TXTDatasetReader
 {
-    private readonly StreamReader _reader;
-    private bool _disposed;
-    private const string Separator = "<|endoftext|>";
-    private readonly char[] _separatorChars = Separator.ToCharArray();
-
-    public TXTDatasetReader(string resourceName, Assembly assembly = null)
+    public async Task<ConcurrentDictionary<int, string>> ReadTXTDatasetAsync(
+        string filePath,
+        string tokenSeparator,
+        int maxConcurrent = 12)
     {
-        if (string.IsNullOrEmpty(resourceName))
-            throw new ArgumentNullException(nameof(resourceName));
+        var splitToken = Encoding.UTF8.GetBytes(tokenSeparator);
+        var semaphore = new SemaphoreSlim(maxConcurrent);
+        var fileInfo = new FileInfo(filePath);
+        var fileSize = fileInfo.Length;
+        var chunkData = new ConcurrentDictionary<int, string>();
+        var tasks = new List<Task>();
 
-        assembly ??= Assembly.GetCallingAssembly();
+        var stopwatch = Stopwatch.StartNew();
 
-        var resourceStream = assembly.GetManifestResourceStream(resourceName);
-        if (resourceStream == null)
-            throw new FileNotFoundException($"Embedded resource '{resourceName}' not found");
+        Console.WriteLine($"Начало чтения файла. Размер файла: {fileSize} байт");
 
-        _reader = new StreamReader(resourceStream, Encoding.UTF8, true, 4096);
+        List<long> boundaries;
+        using (var fileStream = new FileStream(filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            1048576,
+            true))
+        {
+            boundaries = FindChunkBoundaries(
+                 fileStream,
+                 splitToken,
+                 maxConcurrent);
+        }
+
+        var actualNumChunks = boundaries.Count - 1;
+        Console.WriteLine($"Найдено {actualNumChunks} чанков");
+
+        for (var i = 0; i < actualNumChunks; i++)
+        {
+            var chunkIndex = i;
+            var start = boundaries[i];
+            var end = boundaries[i + 1];
+            var chunkLength = end - start;
+
+            await semaphore.WaitAsync();
+
+            tasks.Add(Task.Run(async () =>
+            {
+                using (var fileStream = new FileStream(filePath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    1048576,
+                    true))
+                {
+                    // Создаем буфер для чанка
+                    var buffer = new byte[chunkLength];
+
+                    // Перемещаемся к началу чанка
+                    fileStream.Seek(start, SeekOrigin.Begin);
+
+                    // Читаем весь чанк
+                    var totalBytesRead = 0;
+                    int bytesRead;
+
+                    // Читаем частями на случай большого чанка
+                    while (totalBytesRead < chunkLength &&
+                           (bytesRead = await fileStream.ReadAsync(
+                               buffer,
+                               totalBytesRead,
+                               (int)Math.Min(1048576, chunkLength - totalBytesRead))) > 0)
+                    {
+                        totalBytesRead += bytesRead;
+                    }
+
+                    var chunk = Encoding.UTF8.GetString(buffer, 0, totalBytesRead);
+
+                    chunkData[chunkIndex] = chunk;
+
+                    Console.WriteLine($"Чанк {chunkIndex}: {start}-{end} байт, размер: {chunkLength} байт, прочитано: {totalBytesRead} байт");
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks);
+
+        Console.WriteLine($"\nЧтение завершено за {stopwatch.Elapsed:mm\\:ss\\.ff}");
+        Console.WriteLine($"Прочитано чанков: {chunkData.Count}");
+
+        stopwatch.Stop();
+
+        return chunkData;
     }
 
-    public IEnumerable<string> ReadChunks()
+    private static List<long> FindChunkBoundaries(
+        FileStream fileStream,
+        byte[] splitSpecialToken,
+        int maxConcurrent = 4)
     {
-        var buffer = new char[4096];
-        var chunkBuilder = new StringBuilder();
-        var separatorBuffer = new StringBuilder();
-        int separatorIndex = 0;
-        int charsRead;
+        if (splitSpecialToken == null || splitSpecialToken.Length == 0)
+            throw new ArgumentException("Специальный токен должен быть непустым массивом байт", nameof(splitSpecialToken));
 
-        while ((charsRead = _reader.Read(buffer, 0, buffer.Length)) > 0)
+        long fileSize = fileStream.Length;
+        long chunkSize = fileSize / maxConcurrent;
+
+        var chunkBoundaries = new List<long>();
+        for (int i = 0; i <= maxConcurrent; i++)
         {
-            for (int i = 0; i < charsRead; i++)
+            chunkBoundaries.Add(i * chunkSize);
+        }
+        chunkBoundaries[maxConcurrent] = fileSize;
+
+        const int miniChunkSize = 1048576;
+        var tokenLength = splitSpecialToken.Length;
+
+        var bufferSize = miniChunkSize + tokenLength - 1;
+
+        for (var bi = 1; bi < chunkBoundaries.Count - 1; bi++)
+        {
+            var initialPosition = chunkBoundaries[bi];
+            var currentPosition = initialPosition;
+            var previousRemaining = Array.Empty<byte>();
+
+            while (true)
             {
-                char currentChar = buffer[i];
+                fileStream.Seek(currentPosition, SeekOrigin.Begin);
+                var buffer = new byte[bufferSize];
+                var bytesRead = fileStream.Read(buffer, 0, bufferSize);
 
-                // Проверяем, соответствует ли текущий символ разделителю
-                if (currentChar == _separatorChars[separatorIndex])
+                if (bytesRead == 0)
                 {
-                    separatorBuffer.Append(currentChar);
-                    separatorIndex++;
+                    chunkBoundaries[bi] = fileSize;
+                    break;
+                }
 
-                    // Если нашли полный разделитель
-                    if (separatorIndex == _separatorChars.Length)
-                    {
-                        string chunk = chunkBuilder.ToString().Trim();
-                        if (!string.IsNullOrEmpty(chunk))
-                        {
-                            yield return chunk;
-                        }
-
-                        chunkBuilder.Clear();
-                        separatorBuffer.Clear();
-                        separatorIndex = 0;
-                    }
+                byte[] searchBuffer;
+                if (previousRemaining.Length > 0)
+                {
+                    searchBuffer = new byte[previousRemaining.Length + bytesRead];
+                    Array.Copy(previousRemaining, 0, searchBuffer, 0, previousRemaining.Length);
+                    Array.Copy(buffer, 0, searchBuffer, previousRemaining.Length, bytesRead);
                 }
                 else
                 {
-                    // Если частично совпавший разделитель оказался не полным
-                    if (separatorIndex > 0)
-                    {
-                        chunkBuilder.Append(separatorBuffer.ToString());
-                        separatorBuffer.Clear();
-                        separatorIndex = 0;
-                    }
+                    searchBuffer = new byte[bytesRead];
+                    Array.Copy(buffer, 0, searchBuffer, 0, bytesRead);
+                }
 
-                    chunkBuilder.Append(currentChar);
+                var foundIndex = FindSequence(searchBuffer, splitSpecialToken, searchBuffer.Length);
+                if (foundIndex != -1)
+                {
+                    chunkBoundaries[bi] = currentPosition - previousRemaining.Length + foundIndex;
+                    break;
+                }
+
+                var keepBytes = Math.Min(tokenLength - 1, bytesRead);
+                previousRemaining = new byte[keepBytes];
+                Array.Copy(buffer, bytesRead - keepBytes, previousRemaining, 0, keepBytes);
+
+                currentPosition += miniChunkSize;
+
+                if (currentPosition >= fileSize)
+                {
+                    chunkBoundaries[bi] = fileSize;
+                    break;
                 }
             }
         }
 
-        // Добавляем оставшиеся символы из separatorBuffer
-        if (separatorIndex > 0)
-        {
-            chunkBuilder.Append(separatorBuffer.ToString());
-        }
-
-        // Возвращаем последний чанк
-        string lastChunk = chunkBuilder.ToString().Trim();
-        if (!string.IsNullOrEmpty(lastChunk))
-        {
-            yield return lastChunk;
-        }
+        return chunkBoundaries.Distinct().OrderBy(x => x).ToList();
     }
 
-    public async IAsyncEnumerable<string> ReadChunksAsync()
+    private static int FindSequence(byte[] source, byte[] pattern, int sourceLength)
     {
-        var buffer = new char[4096];
-        var chunkBuilder = new StringBuilder();
-        var separatorBuffer = new StringBuilder();
-        int separatorIndex = 0;
-        int charsRead;
+        if (pattern.Length == 0) return 0;
+        if (pattern.Length > sourceLength) return -1;
 
-        while ((charsRead = await _reader.ReadAsync(buffer, 0, buffer.Length)) > 0)
+        for (int i = 0; i <= sourceLength - pattern.Length; i++)
         {
-            for (int i = 0; i < charsRead; i++)
+            bool found = true;
+            for (int j = 0; j < pattern.Length; j++)
             {
-                char currentChar = buffer[i];
-
-                if (currentChar == _separatorChars[separatorIndex])
+                if (source[i + j] != pattern[j])
                 {
-                    separatorBuffer.Append(currentChar);
-                    separatorIndex++;
-
-                    if (separatorIndex == _separatorChars.Length)
-                    {
-                        string chunk = chunkBuilder.ToString().Trim();
-                        if (!string.IsNullOrEmpty(chunk))
-                        {
-                            yield return chunk;
-                        }
-
-                        chunkBuilder.Clear();
-                        separatorBuffer.Clear();
-                        separatorIndex = 0;
-                    }
-                }
-                else
-                {
-                    if (separatorIndex > 0)
-                    {
-                        chunkBuilder.Append(separatorBuffer.ToString());
-                        separatorBuffer.Clear();
-                        separatorIndex = 0;
-                    }
-
-                    chunkBuilder.Append(currentChar);
+                    found = false;
+                    break;
                 }
             }
+            if (found) return i;
         }
-
-        if (separatorIndex > 0)
-        {
-            chunkBuilder.Append(separatorBuffer.ToString());
-        }
-
-        string lastChunk = chunkBuilder.ToString().Trim();
-        if (!string.IsNullOrEmpty(lastChunk))
-        {
-            yield return lastChunk;
-        }
-    }
-
-    public void Dispose()
-    {
-        if (!_disposed)
-        {
-            _reader?.Dispose();
-            _disposed = true;
-        }
-        GC.SuppressFinalize(this);
+        return -1;
     }
 }
