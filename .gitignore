@@ -364,3 +364,4 @@ FodyWeavers.xsd
 /NovPL/Datasets/TinyStories-train.txt
 /NovPL/Datasets/TinyStories-valid.txt
 /NovPL/Datasets/TinyStories-test.txt
+/NovPL/TestData/pretokens.txt
