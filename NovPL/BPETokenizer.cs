@@ -14,7 +14,7 @@ public class BPETokenizer : IBPETokenizer
     private List<(Token, Token)> _merges = [];
     private ConcurrentDictionary<PreToken, int> _preTokens;
     private ConcurrentDictionary<(Token, Token), HashSet<PreToken>> _tokensHashSet;
-    private ConcurrentDictionary<Token, int> _tokenCount;
+    private ConcurrentDictionary<(Token, Token), int> _tokenCount;
 
     private readonly Regex _pattern;
 
@@ -33,6 +33,7 @@ public class BPETokenizer : IBPETokenizer
         _merges = new();
         _preTokens = new();
         _tokensHashSet = new(new TokenPairComparer());
+        _tokenCount = new(new TokenPairComparer());
         _tXTDatasetReader = new();
     }
 
@@ -55,12 +56,17 @@ public class BPETokenizer : IBPETokenizer
             MaxDegreeOfParallelism = maxConcurrent
         };
 
-        Console.WriteLine($"Запуск обработки чанков");
+        Console.WriteLine($"Запуск обработки чанков\n");
 
-        /*foreach (var chunk in chunks)
+        var blocksCount = 0;
+
+        foreach(var chunk in chunks )
         {
-            
-        }*/
+            blocksCount += chunk.Value.Split(tokenSeparator).Count();
+        }
+
+        Console.WriteLine($"Блоков:{blocksCount}\n");
+
         Parallel.ForEach(chunks, options, chunk =>
         {
             ProcessChunk(chunk, tokenSeparator);
@@ -78,7 +84,8 @@ public class BPETokenizer : IBPETokenizer
 
         //инициализируем словарь сразу с примерным размером для ускорения выполнения
         var localPreTokens = new Dictionary<PreToken, int>(chunkBlocks.Length * 10);
-        var localTokensHashSet = new Dictionary<(Token, Token), HashSet<PreToken>>(chunkBlocks.Length * 10, new TokenPairComparer());
+        var localTokensHashSet = new Dictionary<(Token, Token), HashSet<PreToken>>(chunkBlocks.Length * 50, new TokenPairComparer());
+        var localTokenCount = new Dictionary<(Token, Token), int>(chunkBlocks.Length * 50, new TokenPairComparer());
 
         //Проходимся по каждому блоку текста и претокенизируем его
         for (var i = 0; i < chunkBlocks.Length; i++)
@@ -88,38 +95,56 @@ public class BPETokenizer : IBPETokenizer
             for (var j = 0; j < matches.Count; j++)
             {
                 var preToken = new PreToken(matches[j].Value);
+                int preTokenCount;
                 if (localPreTokens.TryGetValue(preToken, out int currentCount))
                 {
-                    localPreTokens[preToken] = currentCount + 1;
+                    preTokenCount = currentCount + 1;
+                    localPreTokens[preToken] = preTokenCount;
                 }
                 else
                 {
-                    localPreTokens.Add(preToken, 1);
+                    preTokenCount = 1;
+                    localPreTokens.Add(preToken, preTokenCount);
                 }
 
                 if (preToken.Tokens.Count == 1)
                 {
                     continue;
                 }
-
-                //делаем маппинг пар байтов на претокены
-                for (var k = 1; k < preToken.Tokens.Count; k++)
+                else
                 {
-                    if (localTokensHashSet.TryGetValue((preToken.Tokens[k - 1], preToken.Tokens[k]), out var tokenPreTokens))
+                    //делаем маппинг пар байтов на претокены
+                    for (var k = 1; k < preToken.Tokens.Count; k++)
                     {
-                        localTokensHashSet[(preToken.Tokens[k - 1], preToken.Tokens[k])].Add(preToken);
-                    }
-                    else
-                    {
-                        localTokensHashSet.Add((preToken.Tokens[k - 1], preToken.Tokens[k]), new HashSet<PreToken> { preToken });
+                        var tokenPair = (preToken.Tokens[k - 1], preToken.Tokens[k]);
+
+                        //добавляем в маппинг пар байтов на претокены
+                        if (localTokensHashSet.TryGetValue(tokenPair, out var tokenPreTokens))
+                        {
+                            localTokensHashSet[tokenPair].Add(preToken);
+                        }
+                        else
+                        {
+                            localTokensHashSet.Add(tokenPair, new HashSet<PreToken> { preToken });
+                        }
+
+                        //добавляем в подсчет пар байтов
+                        if (localTokenCount.TryGetValue(tokenPair, out int tokenCount))
+                        {
+                            localTokenCount[tokenPair] = tokenCount + preTokenCount;
+                        }
+                        else
+                        {
+                            localTokenCount.Add(tokenPair, preTokenCount);
+                        }
                     }
                 }
             }
         }
 
-        //мержим в основной словарь претокенов
+        //мержим в основные
         BulkInsertPreTokens(localPreTokens);
-        BulkInsertTokensHashSet(localTokensHashSet);
+        BulkInsertTokensHashSet(localTokensHashSet, localTokenCount);
     }
 
     private void BulkInsertPreTokens(Dictionary<PreToken, int> localPreTokens)
@@ -130,7 +155,9 @@ public class BPETokenizer : IBPETokenizer
         }
     }
 
-    private void BulkInsertTokensHashSet(Dictionary<(Token, Token), HashSet<PreToken>> localTokensHashSet)
+    private void BulkInsertTokensHashSet(
+        Dictionary<(Token, Token), HashSet<PreToken>> localTokensHashSet,
+        Dictionary<(Token, Token), int> localTokenCount)
     {
         foreach (var kvp in localTokensHashSet)
         {
@@ -139,18 +166,18 @@ public class BPETokenizer : IBPETokenizer
                 k => kvp.Value,
                 (k, existingSet) =>
                 {
-                    existingSet.UnionWith(kvp.Value);
-                    return existingSet;
+                    lock (existingSet)
+                    {
+                        existingSet.UnionWith(kvp.Value);
+                        return existingSet;
+                    }
                 }
             );
+
+            var tokenPairCount = localTokenCount[kvp.Key];
+            _tokenCount.AddOrUpdate(kvp.Key, tokenPairCount, (key, old) => old + tokenPairCount);
         }
     }
-
-    //key = bytePair; value = List<preToken>
-
-    // [[1,2],[2,3],[3,4],[4,5],[5,6]]
-
-    //Нужно пройтись по пре токенам содержащим самую частую пару байт и слить в этих претокенах эту пару
 
     private void InitVocabularity(string[] specialTokens = null)
     {
