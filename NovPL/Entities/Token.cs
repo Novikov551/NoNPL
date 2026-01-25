@@ -19,7 +19,7 @@ namespace NoNPL.Entities
             _hashCode = CalculateHashCode();
         }
 
-        public Token((Token First, Token Second) frequensedPair)
+        public Token(TokenPair frequensedPair)
         {
             // Используем ArrayPool для снижения нагрузки на GC
             var result = ArrayPool<byte>.Shared.Rent(

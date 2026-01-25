@@ -93,7 +93,7 @@ namespace NoNPL.Entities
 
         public override int GetHashCode() => _hashCode;
 
-        internal (List<(Token First, Token Second)> NewPairs, List<(Token First, Token Second)> NeedUpdateCounterPairs) MergePair((Token First, Token Second) frequensedPair)
+        internal (List<TokenPair> NewPairs, List<TokenPair> NeedUpdateCounterPairs) MergePair(TokenPair frequensedPair)
         {
             var newToken = new Token(frequensedPair);
 
@@ -111,7 +111,7 @@ namespace NoNPL.Entities
             }
 
             if (firstIndex == -1)
-                return (new List<(Token, Token)>(), new List<(Token, Token)>());
+                return (new List<TokenPair>(), new List<TokenPair>());
 
             var secondIndex = firstIndex + 1;
             var newDict = new Dictionary<int, Token>(Tokens.Count - 1);
@@ -137,21 +137,21 @@ namespace NoNPL.Entities
 
             Tokens = newDict;
 
-            var newPairs = new List<(Token First, Token Second)>();
-            var needUpdatePairs = new List<(Token First, Token Second)>();
+            var newPairs = new List<TokenPair>();
+            var needUpdatePairs = new List<TokenPair>();
 
             // Левая пара
             if (firstIndex > 0 && Tokens.TryGetValue(firstIndex - 1, out var leftToken))
             {
-                newPairs.Add((leftToken, newToken));
-                needUpdatePairs.Add((leftToken, frequensedPair.First));
+                newPairs.Add(new TokenPair(leftToken, newToken));
+                needUpdatePairs.Add(new TokenPair(leftToken, frequensedPair.First));
             }
 
             // Правая пара
             if (Tokens.TryGetValue(firstIndex + 1, out var rightToken))
             {
-                newPairs.Add((newToken, rightToken));
-                needUpdatePairs.Add((frequensedPair.Second, rightToken));
+                newPairs.Add(new TokenPair(newToken, rightToken));
+                needUpdatePairs.Add(new TokenPair(frequensedPair.Second, rightToken));
             }
 
             return (newPairs, needUpdatePairs);

@@ -13,28 +13,25 @@ namespace NoNPL;
 [RankColumn]
 public class BPETokenizer
 {
-    private readonly TokenPairComparer _tokenPairComparer;
-
-    private List<(Token, Token)> _merges = [];
+    private List<TokenPair> _merges = [];
 
     private ConcurrentDictionary<Token, int> _vocab;
     private ConcurrentDictionary<PreToken, int> _preTokens;
-    private ConcurrentDictionary<(Token, Token), HashSet<PreToken>> _tokenPairsHashSet;
-    private ConcurrentDictionary<(Token, Token), int> _tokenPairsCount;
+    private ConcurrentDictionary<TokenPair, HashSet<PreToken>> _tokenPairsHashSet;
+    private ConcurrentDictionary<TokenPair, int> _tokenPairsCount;
 
     private readonly Regex _pattern;
     private readonly TXTDatasetReader _tXTDatasetReader;
 
     public BPETokenizer(string pattern)
     {
-        _tokenPairComparer = new();
         _pattern = new Regex(pattern, RegexOptions.Compiled);
         _vocab = new();
         _merges = new();
         _preTokens = new();
 
-        _tokenPairsHashSet = new(_tokenPairComparer);
-        _tokenPairsCount = new(_tokenPairComparer);
+        _tokenPairsHashSet = new();
+        _tokenPairsCount = new();
         _tXTDatasetReader = new();
     }
 
@@ -66,12 +63,12 @@ public class BPETokenizer
     }
 
     [Benchmark]
-    public (Token, Token)? GetFrequensedTokensPair()
+    public TokenPair? GetFrequensedTokensPair()
     {
         if (_tokenPairsCount.IsEmpty)
             return null;
 
-        (Token, Token) bestPair = default;
+        TokenPair bestPair = default;
         int maxCount = 0;
         bool isFirst = true;
 
@@ -103,15 +100,15 @@ public class BPETokenizer
         return bestPair;
     }
 
-    private int CompareTokenPairs((Token, Token) pair1, (Token, Token) pair2)
+    private int CompareTokenPairs(TokenPair pair1, TokenPair pair2)
     {
         // Сравниваем первые токены
-        int firstComparison = CompareTokens(pair1.Item1, pair2.Item1);
+        int firstComparison = CompareTokens(pair1.First, pair2.First);
         if (firstComparison != 0)
             return firstComparison;
 
         // Если первые токены равны, сравниваем вторые
-        return CompareTokens(pair1.Item2, pair2.Item2);
+        return CompareTokens(pair1.Second, pair2.Second);
     }
 
     private int CompareTokens(Token token1, Token token2)
@@ -243,8 +240,8 @@ public class BPETokenizer
 
         //инициализируем словарь сразу с примерным размером для ускорения выполнения
         var preTokens = new Dictionary<PreToken, int>(chunkBlocks.Length * 10);
-        var tokenPairsHashSet = new Dictionary<(Token, Token), HashSet<PreToken>>(chunkBlocks.Length * 50, _tokenPairComparer);
-        var tokenPairsCount = new Dictionary<(Token, Token), int>(chunkBlocks.Length * 50, _tokenPairComparer);
+        var tokenPairsHashSet = new Dictionary<TokenPair, HashSet<PreToken>>(chunkBlocks.Length * 50);
+        var tokenPairsCount = new Dictionary<TokenPair, int>(chunkBlocks.Length * 50);
 
         //Проходимся по каждому блоку текста и претокенизируем его
         for (var i = 0; i < chunkBlocks.Length; i++)
@@ -276,7 +273,7 @@ public class BPETokenizer
                     //делаем маппинг пар байтов на претокены
                     for (var k = 1; k < preToken.Tokens.Count; k++)
                     {
-                        var tokenPair = (preToken.Tokens[k - 1], preToken.Tokens[k]);
+                        var tokenPair = new TokenPair(preToken.Tokens[k - 1], preToken.Tokens[k]);
 
                         //добавляем в маппинг пар байтов на претокены
                         if (tokenPairsHashSet.TryGetValue(tokenPair, out var tokenPreTokens))
@@ -316,8 +313,8 @@ public class BPETokenizer
     }
 
     private void BulkInsertTokensHashSet(
-        Dictionary<(Token, Token), HashSet<PreToken>> localTokensHashSet,
-        Dictionary<(Token, Token), int> localTokenCount)
+        Dictionary<TokenPair, HashSet<PreToken>> localTokensHashSet,
+        Dictionary<TokenPair, int> localTokenCount)
     {
         foreach (var kvp in localTokensHashSet)
         {
