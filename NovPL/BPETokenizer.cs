@@ -54,6 +54,12 @@ public class BPETokenizer
             result = MergePairs();
         }
 
+        var maxId = _vocab.Max(e => e.Value);
+
+        var bytes = Encoding.UTF8.GetBytes(tokenSeparator);
+        var token = new Token(bytes);
+        _vocab.TryAdd(token, maxId + 1);
+
         Console.WriteLine($"Обработано за: {stopwatch.Elapsed:mm\\:ss\\.ff}\n");
 
         stopwatch.Stop();
@@ -338,19 +344,6 @@ public class BPETokenizer
         _vocab.Clear();
 
         int id = 0;
-
-        // Добавляем специальные токены
-        if (specialTokens != null)
-        {
-            foreach (var specialToken in specialTokens)
-            {
-                var bytes = Encoding.UTF8.GetBytes(specialToken);
-                var token = new Token(bytes);
-
-                _vocab[token] = id;
-                id++;
-            }
-        }
 
         // Добавляем все байты (0-255)
         for (int i = 0; i < 256; i++)

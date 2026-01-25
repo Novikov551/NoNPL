@@ -1,4 +1,5 @@
-﻿using System.Collections.Concurrent;
+﻿using NoNPL.Entities;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
@@ -77,8 +78,8 @@ public class TXTDatasetReader
                         totalBytesRead += bytesRead;
                     }
 
-                    var chunk = Encoding.UTF8.GetString(buffer, 0, totalBytesRead);
-
+                    var chunk = UTF8Converter.GetString(buffer, 0, totalBytesRead);
+                    
                     chunkData[chunkIndex] = chunk;
 
                     Console.WriteLine($"Чанк {chunkIndex}: {start}-{end} байт, размер: {chunkLength} байт, прочитано: {totalBytesRead} байт");
