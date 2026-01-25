@@ -163,10 +163,6 @@ public class BPETokenizer
                 if(_tokenPairsHashSet.TryGetValue(needUpdatePair, out var _))
                 {
                     _tokenPairsHashSet[needUpdatePair].Remove(needMergePreToken);
-                }
-
-                if (_tokenPairsCount.TryGetValue(needUpdatePair, out var _))
-                {
                     _tokenPairsCount[needUpdatePair] -= preTokenCount;
                     if (_tokenPairsCount[needUpdatePair] == 0)
                     {
@@ -238,10 +234,13 @@ public class BPETokenizer
         //Получаем блоки текста внутри чанка
         var chunkBlocks = chunk.Value.Split(tokenSeparator);
 
-        //инициализируем словарь сразу с примерным размером для ускорения выполнения
-        var preTokens = new Dictionary<PreToken, int>(chunkBlocks.Length * 10);
-        var tokenPairsHashSet = new Dictionary<TokenPair, HashSet<PreToken>>(chunkBlocks.Length * 50);
-        var tokenPairsCount = new Dictionary<TokenPair, int>(chunkBlocks.Length * 50);
+        // Инициализируем словари с примерным размером для уменьшения реаллокаций
+        var estimatedTokenCount = chunkBlocks.Length * 10;
+        var estimatedPairCount = chunkBlocks.Length * 50;
+
+        var preTokens = new Dictionary<PreToken, int>(estimatedTokenCount);
+        var tokenPairsHashSet = new Dictionary<TokenPair, HashSet<PreToken>>(estimatedPairCount);
+        var tokenPairsCount = new Dictionary<TokenPair, int>(estimatedPairCount);
 
         //Проходимся по каждому блоку текста и претокенизируем его
         for (var i = 0; i < chunkBlocks.Length; i++)
@@ -252,6 +251,7 @@ public class BPETokenizer
             for (var j = 0; j < matches.Count(); j++)
             {
                 var preToken = new PreToken(matches[j].Value);
+
                 int preTokenCount;
                 if (preTokens.TryGetValue(preToken, out int currentCount))
                 {

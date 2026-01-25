@@ -13,17 +13,7 @@ namespace NoNPL.Entities
 
         public PreToken(string preTokenValue)
         {
-            // Быстрая проверка на BOM
-            if (preTokenValue.Length > 0 && preTokenValue[0] == '\uFEFF')
-            {
-                UTF8Value = preTokenValue.Substring(1);
-            }
-            else
-            {
-                UTF8Value = preTokenValue;
-            }
-
-            Bytes = _utf8WithoutBOM.GetBytes(preTokenValue);
+            Bytes = UTF8Converter.GetBytes(preTokenValue);
 
             _hashCode = CalculateHashCode(Bytes);
 
@@ -41,6 +31,8 @@ namespace NoNPL.Entities
                     Tokens[i] = SinglByteTokenCache.Tokens[Bytes[i]];
                 }
             }
+
+            UTF8Value = preTokenValue;
         }
 
         public byte[] Bytes { get; init; }

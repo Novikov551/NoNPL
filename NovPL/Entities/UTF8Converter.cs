@@ -18,5 +18,16 @@ namespace NoNPL.Entities
 
             return str;
         }
+
+        public static byte[] GetBytes(string value)
+        {
+            // Быстрая проверка на BOM
+            if (value.Length > 0 && value[0] == '\uFEFF')
+            {
+                value = value.Substring(1);
+            }
+
+            return _utf8WithoutBOM.GetBytes(value);
+        }
     }
 }
