@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using System.Buffers;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
 
@@ -13,20 +15,28 @@ namespace NoNPL.Entities
             Bytes = bytes;
 
             UTF8Value = Encoding.UTF8.GetString(Bytes);
+
+            _hashCode = CalculateHashCode();
         }
 
         public Token((Token First, Token Second) frequensedPair)
         {
-            // Создаем массив нужного размера
-            var result = new byte[frequensedPair.First.Bytes.Length + frequensedPair.Second.Bytes.Length];
+            // Используем ArrayPool для снижения нагрузки на GC
+            var result = ArrayPool<byte>.Shared.Rent(
+                frequensedPair.First.Bytes.Length + frequensedPair.Second.Bytes.Length);
 
-            // Копируем первый массив в начало результата
-            Buffer.BlockCopy(frequensedPair.First.Bytes, 0, result, 0, frequensedPair.First.Bytes.Length);
+            try
+            {
+                frequensedPair.First.Bytes.CopyTo(result, 0);
+                frequensedPair.Second.Bytes.CopyTo(result, frequensedPair.First.Bytes.Length);
 
-            // Копируем второй массив после первого
-            Buffer.BlockCopy(frequensedPair.Second.Bytes, 0, result, frequensedPair.First.Bytes.Length, frequensedPair.Second.Bytes.Length);
-
-            Bytes = result;
+                Bytes = new byte[frequensedPair.First.Bytes.Length + frequensedPair.Second.Bytes.Length];
+                Array.Copy(result, Bytes, Bytes.Length);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(result);
+            }
 
             UTF8Value = Encoding.UTF8.GetString(Bytes);
         }
@@ -34,6 +44,8 @@ namespace NoNPL.Entities
         public byte[] Bytes { get; private set; }
 
         public string UTF8Value { get; init; }
+
+        private readonly int _hashCode;
 
         public bool Equals(Token other)
         {
@@ -48,7 +60,7 @@ namespace NoNPL.Entities
             return Equals(obj as Token);
         }
 
-        public override int GetHashCode()
+        public int CalculateHashCode()
         {
             // Простое вычисление хэш-кода для массива байт
             unchecked
@@ -61,6 +73,8 @@ namespace NoNPL.Entities
                 return hash;
             }
         }
+
+        public override int GetHashCode() => _hashCode;
 
         public override string ToString()
         {

@@ -24,13 +24,8 @@ namespace NoNPL.Comparers
 
         public int GetHashCode((Token, Token) obj)
         {
-            unchecked
-            {
-                int hash = -2128831035; // FNV начальное значение
-                hash = (hash * 16777619) ^ (obj.Item1?.GetHashCode() ?? 0);
-                hash = (hash * 16777619) ^ (obj.Item2?.GetHashCode() ?? 0);
-                return hash;
-            }
+            // Самый производительный вариант для .NET Core 2.1+
+            return HashCode.Combine(obj.Item1, obj.Item2);
         }
     }
 }

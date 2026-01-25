@@ -1,4 +1,5 @@
-﻿using NoNPL.Comparers;
+﻿using BenchmarkDotNet.Attributes;
+using NoNPL.Comparers;
 using NoNPL.DataReaders;
 using NoNPL.Entities;
 using System.Collections.Concurrent;
@@ -8,8 +9,12 @@ using System.Text.RegularExpressions;
 
 namespace NoNPL;
 
+[MemoryDiagnoser]
+[RankColumn]
 public class BPETokenizer
 {
+    private readonly TokenPairComparer _tokenPairComparer;
+
     private List<(Token, Token)> _merges = [];
 
     private ConcurrentDictionary<Token, int> _vocab;
@@ -22,17 +27,21 @@ public class BPETokenizer
 
     public BPETokenizer(string pattern)
     {
+        _tokenPairComparer = new();
         _pattern = new Regex(pattern, RegexOptions.Compiled);
         _vocab = new();
         _merges = new();
         _preTokens = new();
-        _tokenPairsHashSet = new(new TokenPairComparer());
-        _tokenPairsCount = new(new TokenPairComparer());
+
+        _tokenPairsHashSet = new(_tokenPairComparer);
+        _tokenPairsCount = new(_tokenPairComparer);
         _tXTDatasetReader = new();
     }
 
     public async Task Train(string filePath, string tokenSeparator, int vocabSize, int maxConcurrent = 12)
     {
+        var stopwatch = Stopwatch.StartNew();
+
         InitVocabularity([tokenSeparator]);
 
         var chunks = await _tXTDatasetReader.ReadTXTDatasetAsync(filePath, tokenSeparator, maxConcurrent);
@@ -40,14 +49,17 @@ public class BPETokenizer
         ProcessChunks(chunks, tokenSeparator);
 
         var result = true;
-        while (result && _vocab.Count < vocabSize)
+        while (result && _vocab.Count <= vocabSize)
         {
             result = MergePairs();
         }
 
-        var sortedVocab = _vocab.OrderBy(e => e.Value);
+        Console.WriteLine($"Обработано за: {stopwatch.Elapsed:mm\\:ss\\.ff}\n");
+
+        stopwatch.Stop();
     }
 
+    [Benchmark]
     public (Token, Token)? GetFrequensedTokensPair()
     {
         if (_tokenPairsCount.IsEmpty)
@@ -145,9 +157,20 @@ public class BPETokenizer
 
             foreach (var needUpdatePair in tokenPairs.NeedUpdateCounterPairs)
             {
-                _tokenPairsHashSet[needUpdatePair].Remove(needMergePreToken);
+                if(_tokenPairsHashSet.TryGetValue(needUpdatePair, out var _))
+                {
+                    _tokenPairsHashSet[needUpdatePair].Remove(needMergePreToken);
+                }
 
-                _tokenPairsCount[needUpdatePair] -= preTokenCount;
+                if (_tokenPairsCount.TryGetValue(needUpdatePair, out var _))
+                {
+                    _tokenPairsCount[needUpdatePair] -= preTokenCount;
+                    if (_tokenPairsCount[needUpdatePair] == 0)
+                    {
+                        _tokenPairsCount.Remove(needUpdatePair, out var _);
+                        _tokenPairsHashSet.Remove(needUpdatePair, out var _);
+                    }
+                }
             }
 
             foreach (var newPair in tokenPairs.NewPairs)
@@ -166,6 +189,11 @@ public class BPETokenizer
             }
         }
 
+        if (!_tokenPairsHashSet.Remove(frequensedPair.Value, out var _))
+        {
+            throw new Exception();
+        }
+
         if (!_tokenPairsCount.Remove(frequensedPair.Value, out var _))
         {
             throw new Exception();
@@ -181,43 +209,25 @@ public class BPETokenizer
 
     private void ProcessChunks(ConcurrentDictionary<int, string> chunks, string tokenSeparator, int maxConcurrent = 12)
     {
-        var stopwatch = Stopwatch.StartNew();
+       
         var options = new ParallelOptions
         {
             MaxDegreeOfParallelism = maxConcurrent
         };
 
-        Console.WriteLine($"Запуск обработки чанков\n");
-
         var blocksCount = 0;
-
+/*
         foreach (var chunk in chunks)
         {
             blocksCount += chunk.Value.Split(tokenSeparator).Count();
 
             ProcessChunk(chunk, tokenSeparator);
         }
-
-        /*Console.WriteLine($"Блоков:{blocksCount}\n");
-
+*/
         Parallel.ForEach(chunks, options, chunk =>
         {
-            // Получаем текущий поток
-            Thread currentThread = Thread.CurrentThread;
-            // Получаем ID потока
-            int threadId = currentThread.ManagedThreadId;
-            // Получаем индекс процессора (ядра), на котором выполняется поток
-            int processorId = Thread.GetCurrentProcessorId();
-
-            // Выводим информацию
-            Console.WriteLine($"Итерация {chunk.Key} выполняется в потоке с ID {threadId} на процессоре с индексом {processorId}");
-
             ProcessChunk(chunk, tokenSeparator);
         });
-
-        Console.WriteLine($"Обработано за {stopwatch.Elapsed:mm\\:ss\\.ff}");*/
-
-        stopwatch.Stop();
     }
 
     private void ProcessChunk(KeyValuePair<int, string> chunk, string tokenSeparator)
@@ -227,15 +237,16 @@ public class BPETokenizer
 
         //инициализируем словарь сразу с примерным размером для ускорения выполнения
         var preTokens = new Dictionary<PreToken, int>(chunkBlocks.Length * 10);
-        var tokenPairsHashSet = new Dictionary<(Token, Token), HashSet<PreToken>>(chunkBlocks.Length * 50, new TokenPairComparer());
-        var tokenPairsCount = new Dictionary<(Token, Token), int>(chunkBlocks.Length * 50, new TokenPairComparer());
+        var tokenPairsHashSet = new Dictionary<(Token, Token), HashSet<PreToken>>(chunkBlocks.Length * 50, _tokenPairComparer);
+        var tokenPairsCount = new Dictionary<(Token, Token), int>(chunkBlocks.Length * 50, _tokenPairComparer);
 
         //Проходимся по каждому блоку текста и претокенизируем его
         for (var i = 0; i < chunkBlocks.Length; i++)
         {
             //Проходимся по совпадениям и записиываем претокены в локальный словарь
             var matches = _pattern.Matches(chunkBlocks[i]);
-            for (var j = 0; j < matches.Count; j++)
+            /*var matches = chunkBlocks[i].Split(" ");*/
+            for (var j = 0; j < matches.Count(); j++)
             {
                 var preToken = new PreToken(matches[j].Value);
                 int preTokenCount;
@@ -274,7 +285,7 @@ public class BPETokenizer
                         //добавляем в подсчет пар байтов
                         if (tokenPairsCount.TryGetValue(tokenPair, out int tokenCount))
                         {
-                            tokenPairsCount[tokenPair] = tokenCount + preTokenCount;
+                            tokenPairsCount[tokenPair] = tokenCount + 1;
                         }
                         else
                         {

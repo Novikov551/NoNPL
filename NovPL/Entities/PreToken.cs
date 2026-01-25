@@ -9,37 +9,81 @@ namespace NoNPL.Entities
     [DebuggerDisplay("b{UTF8Value}: [{string.Join(\", \", Tokens.Values)}]")]
     public class PreToken : IEquatable<PreToken>
     {
+        private static readonly Encoding _utf8WithoutBOM = new UTF8Encoding(false);
+
         public PreToken(string preTokenValue)
         {
-            Tokens = new();
-            UTF8Value = preTokenValue;
-            Bytes = Encoding.UTF8.GetBytes(preTokenValue);
-
-            var tokenNumber = 0;
-            if (Bytes.Count() > 1)
+            // Быстрая проверка на BOM
+            if (preTokenValue.Length > 0 && preTokenValue[0] == '\uFEFF')
             {
-                for (var i = 0; i < Bytes.Count(); i++)
-                {
-                    Tokens.Add(tokenNumber, new Token([Bytes[i]]));
-                    tokenNumber++;
-                }
+                UTF8Value = preTokenValue.Substring(1);
             }
             else
             {
-                Tokens.Add(tokenNumber, new Token(Bytes));
+                UTF8Value = preTokenValue;
+            }
+
+            Bytes = _utf8WithoutBOM.GetBytes(preTokenValue);
+
+            _hashCode = CalculateHashCode(Bytes);
+
+            if (Bytes.Length == 0) return;
+
+            Tokens = new Dictionary<int, Token>(Bytes.Length);
+            if (Bytes.Length == 1)
+            {
+                Tokens[0] = SinglByteTokenCache.Tokens[Bytes[0]];
+            }
+            else
+            {
+                for (int i = 0; i < Bytes.Length; i++)
+                {
+                    Tokens[i] = SinglByteTokenCache.Tokens[Bytes[i]];
+                }
             }
         }
 
         public byte[] Bytes { get; init; }
         public Dictionary<int, Token> Tokens { get; private set; }
         public string UTF8Value { get; init; }
+        private readonly int _hashCode;
+
+        private static int CalculateHashCode(byte[] bytes)
+        {
+            if (bytes.Length == 0) return 0;
+
+            unchecked
+            {
+                int hash = 17;
+                // Обрабатываем по 4 байта за раз если возможно
+                int i = 0;
+                for (; i <= bytes.Length - 4; i += 4)
+                {
+                    hash = hash * 31 + bytes[i];
+                    hash = hash * 31 + bytes[i + 1];
+                    hash = hash * 31 + bytes[i + 2];
+                    hash = hash * 31 + bytes[i + 3];
+                }
+
+                // Оставшиеся байты
+                for (; i < bytes.Length; i++)
+                {
+                    hash = hash * 31 + bytes[i];
+                }
+                return hash;
+            }
+        }
 
         public bool Equals(PreToken other)
         {
             if (ReferenceEquals(this, other)) return true;
             if (other is null) return false;
 
-            return Bytes.SequenceEqual(other.Bytes);
+            // Быстрое сравнение по хэш-коду
+            if (_hashCode != other._hashCode) return false;
+
+            // Используем Span для быстрого сравнения массивов
+            return Bytes.AsSpan().SequenceEqual(other.Bytes);
         }
 
         public override bool Equals(object obj)
@@ -47,99 +91,67 @@ namespace NoNPL.Entities
             return Equals(obj as PreToken);
         }
 
-        public override int GetHashCode()
-        {
-            // Простое вычисление хэш-кода для массива байт
-            unchecked
-            {
-                int hash = 17;
-                foreach (byte b in Bytes)
-                {
-                    hash = hash * 31 + b;
-                }
-                return hash;
-            }
-        }
+        public override int GetHashCode() => _hashCode;
 
         internal (List<(Token First, Token Second)> NewPairs, List<(Token First, Token Second)> NeedUpdateCounterPairs) MergePair((Token First, Token Second) frequensedPair)
         {
             var newToken = new Token(frequensedPair);
 
-            var firstIndex = 0;
-            var secondIndex = 1;
+            var firstIndex = -1;
+            var tokensList = Tokens.OrderBy(kv => kv.Key).ToList();
 
-            foreach (var token in Tokens)
+            for (int i = 0; i < tokensList.Count - 1; i++)
             {
-                var firstEqual = token.Value.Equals(frequensedPair.First);
-                if (firstEqual)
+                if (tokensList[i].Value.Equals(frequensedPair.First) &&
+                    tokensList[i + 1].Value.Equals(frequensedPair.Second))
                 {
-                    if (token.Key < Tokens.Max(e => e.Key))
-                    {
-                        var secondEqual = Tokens[token.Key + 1].Equals(frequensedPair.Second);
-                        if (secondEqual)
-                        {
-                            firstIndex = token.Key;
-                            secondIndex = token.Key + 1;
-
-                            break;
-                        }
-                    }
+                    firstIndex = tokensList[i].Key;
+                    break;
                 }
             }
 
-            var firstToken = Tokens[firstIndex];
-            var secondToken = Tokens[secondIndex];
+            if (firstIndex == -1)
+                return (new List<(Token, Token)>(), new List<(Token, Token)>());
 
+            var secondIndex = firstIndex + 1;
             var newDict = new Dictionary<int, Token>(Tokens.Count - 1);
 
-            foreach (var token in Tokens)
+            var pairReplaced = false;
+            foreach (var token in tokensList)
             {
-                if (token.Key != firstIndex)
+                if (token.Key == firstIndex)
                 {
-                    if (token.Key < secondIndex)
-                    {
-                        newDict.Add(token.Key, token.Value);
-                    }
-
-                    if (token.Key > secondIndex)
-                    {
-                        newDict.Add(token.Key - 1, token.Value);
-                    }
+                    newDict[token.Key] = newToken;
+                    pairReplaced = true;
+                    continue;
                 }
+                else if (token.Key == secondIndex)
+                {
+                    continue; // Пропускаем второй токен пары
+                }
+
+                // Корректируем индекс если пара уже заменена
+                int newKey = pairReplaced && token.Key > secondIndex ? token.Key - 1 : token.Key;
+                newDict[newKey] = token.Value;
             }
 
-            if (firstIndex == 5) { }
             Tokens = newDict;
-            Tokens.Add(firstIndex, newToken);
 
-            // Находим новые пары
             var newPairs = new List<(Token First, Token Second)>();
-
-            // Находим пары у которых нужно обновить счетчики
             var needUpdatePairs = new List<(Token First, Token Second)>();
 
-            var leftNumber = -1;
-            if (firstIndex != 0)
+            // Левая пара
+            if (firstIndex > 0 && Tokens.TryGetValue(firstIndex - 1, out var leftToken))
             {
-                leftNumber = firstIndex - 1;
+                newPairs.Add((leftToken, newToken));
+                needUpdatePairs.Add((leftToken, frequensedPair.First));
             }
 
-            if (leftNumber != -1)
+            // Правая пара
+            if (Tokens.TryGetValue(firstIndex + 1, out var rightToken))
             {
-                newPairs.Add((Tokens[leftNumber], newToken));
-                needUpdatePairs.Add((Tokens[leftNumber], frequensedPair.First));
-            }
-
-            var rightNumber = -1;
-            if (secondIndex <= Tokens.Max(e => e.Key))
-            {
-                rightNumber = secondIndex;//потому что мы уже удалили второй токен и заменили его последующим
-            }
-
-            if (rightNumber != -1)
-            {
-                newPairs.Add((newToken, Tokens[rightNumber]));
-                needUpdatePairs.Add((frequensedPair.Second, Tokens[rightNumber]));
+                newPairs.Add((newToken, rightToken));
+                needUpdatePairs.Add((frequensedPair.Second, rightToken));
             }
 
             return (newPairs, needUpdatePairs);
