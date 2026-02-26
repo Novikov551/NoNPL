@@ -2,15 +2,18 @@
 using NoNPL.Entities;
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-var tokenizer = new BPETokenizer(@"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+");
+var pattern = @"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
+var saveLocation = "C:\\Users\\nikit\\OneDrive\\Desktop\\Projects\\CS336\\NovPL\\NovPL\\Results\\";
 
-await tokenizer.Train(
-    "C:\\Users\\nikit\\OneDrive\\Desktop\\Projects\\CS336\\NovPL\\NovPL\\Datasets\\TinyStories-valid.txt",
-    "<|endoftext|>",
-    1000,
-    Environment.ProcessorCount);
+var tokenizer = new BPETokenizer(pattern, saveLocation);
 
-Console.WriteLine("Обучение завершено! Нажмите любую клавишу для продолжения...");
+await tokenizer.LoadVocab();
+
+
+
+
+
+/*AdvancedConsole.WriteLine("Обучение завершено! Нажмите любую клавишу для продолжения...");
 Console.ReadKey(true);
 
 Console.Clear();
@@ -206,4 +209,4 @@ while (true)
 
 Console.WriteLine(" Нажмите любую клавишу для выхода...");
 Console.ReadKey(true);
-Console.Clear();
+Console.Clear();*/

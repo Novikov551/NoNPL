@@ -10,7 +10,9 @@ public class TXTDatasetReader
     public async Task<ConcurrentDictionary<int, string>> ReadTXTDatasetAsync(
         string filePath,
         string tokenSeparator,
-        int maxConcurrent = 12)
+        int maxConcurrent = 12,
+        int bufferSize = 1048576,
+        CancellationToken ct = default)
     {
         var splitToken = Encoding.UTF8.GetBytes(tokenSeparator);
         var semaphore = new SemaphoreSlim(maxConcurrent);
@@ -21,14 +23,14 @@ public class TXTDatasetReader
 
         var stopwatch = Stopwatch.StartNew();
 
-        Console.WriteLine($"Начало чтения файла. Размер файла: {fileSize} байт");
+        AdvancedConsole.WriteLine($"Starting reading... File size: {Decimal.Round((fileSize / 1024m / 1024m), 2)} Мбайт");
 
         List<long> boundaries;
         using (var fileStream = new FileStream(filePath,
             FileMode.Open,
             FileAccess.Read,
             FileShare.Read,
-            1048576,
+            bufferSize,
             true))
         {
             boundaries = FindChunkBoundaries(
@@ -38,7 +40,7 @@ public class TXTDatasetReader
         }
 
         var actualNumChunks = boundaries.Count - 1;
-        Console.WriteLine($"Найдено {actualNumChunks} чанков");
+        AdvancedConsole.WriteLine($"Found {actualNumChunks} chunks");
 
         for (var i = 0; i < actualNumChunks; i++)
         {
@@ -47,7 +49,7 @@ public class TXTDatasetReader
             var end = boundaries[i + 1];
             var chunkLength = end - start;
 
-            await semaphore.WaitAsync();
+            await semaphore.WaitAsync(ct);
 
             tasks.Add(Task.Run(async () =>
             {
@@ -55,7 +57,7 @@ public class TXTDatasetReader
                     FileMode.Open,
                     FileAccess.Read,
                     FileShare.Read,
-                    1048576,
+                    bufferSize,
                     true))
                 {
                     // Создаем буфер для чанка
@@ -73,24 +75,23 @@ public class TXTDatasetReader
                            (bytesRead = await fileStream.ReadAsync(
                                buffer,
                                totalBytesRead,
-                               (int)Math.Min(1048576, chunkLength - totalBytesRead))) > 0)
+                               (int)Math.Min(bufferSize, chunkLength - totalBytesRead),
+                               ct)) > 0)
                     {
                         totalBytesRead += bytesRead;
                     }
 
                     var chunk = UTF8Converter.GetString(buffer, 0, totalBytesRead);
-                    
-                    chunkData[chunkIndex] = chunk;
 
-                    Console.WriteLine($"Чанк {chunkIndex}: {start}-{end} байт, размер: {chunkLength} байт, прочитано: {totalBytesRead} байт");
+                    chunkData[chunkIndex] = chunk;
                 }
             }));
         }
 
         await Task.WhenAll(tasks);
 
-        Console.WriteLine($"\nЧтение завершено за {stopwatch.Elapsed:mm\\:ss\\.ff}");
-        Console.WriteLine($"Прочитано чанков: {chunkData.Count}");
+        AdvancedConsole.WriteLine($"Reading completed. Duration: {stopwatch.Elapsed:mm\\:ss\\.ff}",
+            ConsoleMessageType.Success);
 
         stopwatch.Stop();
 
@@ -100,13 +101,14 @@ public class TXTDatasetReader
     private static List<long> FindChunkBoundaries(
         FileStream fileStream,
         byte[] splitSpecialToken,
-        int maxConcurrent = 4)
+        int bufferSize = 1048576,
+        int maxConcurrent = 20)
     {
         if (splitSpecialToken == null || splitSpecialToken.Length == 0)
             throw new ArgumentException("Специальный токен должен быть непустым массивом байт", nameof(splitSpecialToken));
 
-        long fileSize = fileStream.Length;
-        long chunkSize = fileSize / maxConcurrent;
+        var fileSize = fileStream.Length;
+        var chunkSize = fileSize / maxConcurrent;
 
         var chunkBoundaries = new List<long>();
         for (int i = 0; i <= maxConcurrent; i++)
@@ -115,10 +117,9 @@ public class TXTDatasetReader
         }
         chunkBoundaries[maxConcurrent] = fileSize;
 
-        const int miniChunkSize = 1048576;
         var tokenLength = splitSpecialToken.Length;
 
-        var bufferSize = miniChunkSize + tokenLength - 1;
+        var chunkBufferSize = bufferSize + tokenLength - 1;
 
         for (var bi = 1; bi < chunkBoundaries.Count - 1; bi++)
         {
@@ -129,8 +130,8 @@ public class TXTDatasetReader
             while (true)
             {
                 fileStream.Seek(currentPosition, SeekOrigin.Begin);
-                var buffer = new byte[bufferSize];
-                var bytesRead = fileStream.Read(buffer, 0, bufferSize);
+                var buffer = new byte[chunkBufferSize];
+                var bytesRead = fileStream.Read(buffer, 0, chunkBufferSize);
 
                 if (bytesRead == 0)
                 {
@@ -162,7 +163,7 @@ public class TXTDatasetReader
                 previousRemaining = new byte[keepBytes];
                 Array.Copy(buffer, bytesRead - keepBytes, previousRemaining, 0, keepBytes);
 
-                currentPosition += miniChunkSize;
+                currentPosition += bufferSize;
 
                 if (currentPosition >= fileSize)
                 {
@@ -175,15 +176,17 @@ public class TXTDatasetReader
         return chunkBoundaries.Distinct().OrderBy(x => x).ToList();
     }
 
-    private static int FindSequence(byte[] source, byte[] pattern, int sourceLength)
+    private static int FindSequence(byte[] source,
+        byte[] pattern,
+        int sourceLength)
     {
         if (pattern.Length == 0) return 0;
         if (pattern.Length > sourceLength) return -1;
 
-        for (int i = 0; i <= sourceLength - pattern.Length; i++)
+        for (var i = 0; i <= sourceLength - pattern.Length; i++)
         {
             bool found = true;
-            for (int j = 0; j < pattern.Length; j++)
+            for (var j = 0; j < pattern.Length; j++)
             {
                 if (source[i + j] != pattern[j])
                 {

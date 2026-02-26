@@ -3,6 +3,8 @@ using NoNPL.Comparers;
 using NoNPL.DataReaders;
 using NoNPL.Entities;
 using NoNPL.Extensions;
+using NoNPL.Services.Serializers;
+using NoNPL.Services.Storage;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -24,8 +26,10 @@ public class BPETokenizer
 
     private readonly Regex _pattern;
     private readonly TXTDatasetReader _tXTDatasetReader;
+    private readonly VocabStorage _vocabStorage;
 
-    public BPETokenizer(string pattern)
+    public BPETokenizer(string pattern,
+        string saveFolderLocation)
     {
         _pattern = new Regex(pattern, RegexOptions.Compiled);
         _vocab = new();
@@ -35,23 +39,60 @@ public class BPETokenizer
         _tokenPairsHashSet = new();
         _tokenPairsCount = new();
         _tXTDatasetReader = new();
+
+        _vocabStorage = new VocabStorage(saveFolderLocation, SerializerFactory.Create(SerializerFormat.Json));
     }
 
-    public async Task Train(string filePath, string tokenSeparator, int vocabSize, int maxConcurrent = 12)
+    public async Task LoadVocab(CancellationToken ct = default)
     {
-        var stopwatch = Stopwatch.StartNew();
+        var (vocab, merges, latestVersion) = await _vocabStorage.LoadLatestAsync(ct);
+        AdvancedConsole.WriteLine($"Загружена последняя версия {latestVersion} с {vocab.Count} токенам", ConsoleMessageType.Warning);
+
+        _vocab = vocab;
+        _merges = merges;
+    }
+
+    public async Task SaveVocabAsync(CancellationToken ct = default)
+    {
+        await _vocabStorage.SaveNextAsync(_vocab, _merges, ct);
+        AdvancedConsole.WriteLine($"Vocab saved!", ConsoleMessageType.Success);
+    }
+
+    public async Task TrainAsync(string filePath,
+        string tokenSeparator,
+        int vocabSize,
+        int maxConcurrent = 12,
+        CancellationToken ct = default)
+    {
+        var generalStopwatch = Stopwatch.StartNew();
 
         InitVocabularity([tokenSeparator]);
 
-        var chunks = await _tXTDatasetReader.ReadTXTDatasetAsync(filePath, tokenSeparator, maxConcurrent);
+        var chunks = await _tXTDatasetReader.ReadTXTDatasetAsync(filePath, 
+            tokenSeparator,
+            maxConcurrent, 
+            ct: ct);
+
+        AdvancedConsole.WriteLine($"Start training...");
 
         ProcessChunks(chunks, tokenSeparator);
 
+        var stopwatch = Stopwatch.StartNew();
+        AdvancedConsole.WriteLine($"Start merging pairs of bytes...");
+
+        var counter = _vocab.Count;
         var result = true;
         while (result && _vocab.Count <= vocabSize)
         {
             result = MergePairs();
+            if (counter % 10 == 0)
+            {
+                AdvancedConsole.WriteProgress(_vocab.Count, vocabSize, "Progress:", 50, ConsoleMessageType.Warning);
+            }
+            counter++;
         }
+
+        AdvancedConsole.WriteLine($"Completing the merging of byte pairs... Duration: {stopwatch.Elapsed:mm\\:ss\\.ff}\n", ConsoleMessageType.Success);
 
         var maxId = _vocab.Max(e => e.Value);
 
@@ -59,16 +100,16 @@ public class BPETokenizer
         var token = new Token(bytes);
         _vocab.TryAdd(token, maxId + 1);
 
-        Console.WriteLine($"Датасет обработан за: {stopwatch.Elapsed:mm\\:ss\\.ff}\n");
+        AdvancedConsole.WriteLine($"Dataset processed. Duration: {generalStopwatch.Elapsed:mm\\:ss\\.ff}\n", ConsoleMessageType.Success);
 
-        stopwatch.Stop();
+        generalStopwatch.Stop();
     }
 
     public async Task<List<int>> Encode(string text)
     {
         var stopwatch = Stopwatch.StartNew();
 
-        Console.WriteLine($"Старт токенизации.");
+        AdvancedConsole.WriteLine($"Start of tokenization...");
 
         var tokens = new List<int>(text.Length);
         foreach (ValueMatch match in _pattern.EnumerateMatches(text))
@@ -84,20 +125,18 @@ public class BPETokenizer
             tokens.AddRange(TokenizePreToken(preToken.Tokens.Values.ToList()));
         }
 
-        Console.WriteLine($"Обработано за: {stopwatch.Elapsed:mm\\:ss\\.ff}\n");
+        AdvancedConsole.WriteLine($"Tokenization is complete. Duration: {stopwatch.Elapsed:mm\\:ss\\.ff}\n", ConsoleMessageType.Success);
 
         stopwatch.Stop();
 
         return tokens;
     }
 
-    // Альтернативный вариант с использованием errors='replace' (более элегантный)
     public string Decode(IEnumerable<int> tokenIds)
     {
         if (tokenIds == null)
             return string.Empty;
 
-        // Собираем все байты из токенов
         var allBytes = new List<byte>();
 
         foreach (int tokenId in tokenIds)
@@ -199,7 +238,6 @@ public class BPETokenizer
             }
             else if (kvp.Value == maxCount)
             {
-                // Лексикографическое сравнение пар токенов
                 if (CompareTokenPairs(kvp.Key, bestPair) > 0)
                 {
                     bestPair = kvp.Key;
@@ -212,12 +250,10 @@ public class BPETokenizer
 
     private int CompareTokenPairs(TokenPair pair1, TokenPair pair2)
     {
-        // Сравниваем первые токены
         int firstComparison = CompareTokens(pair1.First, pair2.First);
         if (firstComparison != 0)
             return firstComparison;
 
-        // Если первые токены равны, сравниваем вторые
         return CompareTokens(pair1.Second, pair2.Second);
     }
 
@@ -235,7 +271,6 @@ public class BPETokenizer
         byte[] bytes1 = token1.Bytes;
         byte[] bytes2 = token2.Bytes;
 
-        // Лексикографическое сравнение байтовых массивов
         int minLength = Math.Min(bytes1.Length, bytes2.Length);
         for (int i = 0; i < minLength; i++)
         {
@@ -244,7 +279,6 @@ public class BPETokenizer
                 return comparison;
         }
 
-        // Если все байты до minLength равны, более короткий массив считается меньшим
         return bytes1.Length.CompareTo(bytes2.Length);
     }
 
@@ -318,35 +352,42 @@ public class BPETokenizer
 
     private void ProcessChunks(ConcurrentDictionary<int, string> chunks, string tokenSeparator, int maxConcurrent = 12)
     {
+        var stopwatch = Stopwatch.StartNew();
+        AdvancedConsole.WriteLine($"Launch of pre-tokenization...");
 
         var options = new ParallelOptions
         {
             MaxDegreeOfParallelism = maxConcurrent
         };
 
-        var blocksCount = 0;
-        /*
-                foreach (var chunk in chunks)
-                {
-                    blocksCount += chunk.Value.Split(tokenSeparator).Count();
-
-                    ProcessChunk(chunk, tokenSeparator);
-                }
-        */
+        int totalChunks = chunks.Count;
+        int processedChunksCounter = 0;
+        object lockObj = new object();
         Parallel.ForEach(chunks, options, chunk =>
         {
             ProcessChunk(chunk, tokenSeparator);
+
+            Interlocked.Increment(ref processedChunksCounter);
+
+            var current = Interlocked.CompareExchange(ref processedChunksCounter, 0, 0);
+
+            lock (lockObj)
+            {
+                AdvancedConsole.WriteProgress(current, totalChunks, "Progress:", 50, ConsoleMessageType.Warning);
+            }
         });
+
+        AdvancedConsole.WriteLine($"\nPre-tokenization is complete. Duration {stopwatch.Elapsed:mm\\:ss\\.ff}", ConsoleMessageType.Success);
+        stopwatch.Stop();
     }
 
     private List<string> GetChunkBlocks(KeyValuePair<int, string> chunk, string tokenSeparator)
     {
-        // Вместо Split используем ReadOnlySpan и IndexOf вручную
         var text = chunk.Value.AsSpan();
         var separator = tokenSeparator.AsSpan();
-        var chunkBlocks = new List<string>(); // или List<ReadOnlySpan<char>> если можно
+        var chunkBlocks = new List<string>();
 
-        int start = 0;
+        var start = 0;
         while (true)
         {
             int end = text.Slice(start).IndexOf(separator, StringComparison.Ordinal);
@@ -391,7 +432,6 @@ public class BPETokenizer
                     continue;
                 }
 
-                // Пишем так:
                 ref int preTokenCount = ref CollectionsMarshal.GetValueRefOrAddDefault(preTokens, preToken, out bool exists);
                 preTokenCount += 1;
 
@@ -416,7 +456,6 @@ public class BPETokenizer
         int preTokenCount,
         Dictionary<TokenPair, PairData> tokenPairData)
     {
-        // Используем for вместо foreach для списка токенов
         for (int i = 1; i < tokens.Count; i++)
         {
             var tokenPair = new TokenPair(tokens[i - 1], tokens[i]);
@@ -426,16 +465,13 @@ public class BPETokenizer
 
             if (!exists)
             {
-                // Создаем новую запись
                 pairData = new PairData(preToken);
-                // Устанавливаем правильный счетчик на основе preTokenCount
                 pairData.Count = preTokenCount;
             }
             else
             {
-                // Обновляем существующую запись
                 pairData.PreTokens.Add(preToken);
-                pairData.Count++; // Увеличиваем на 1
+                pairData.Count++;
             }
         }
     }

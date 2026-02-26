@@ -3,11 +3,14 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
+using MessagePack;
+using System.Text.Json.Serialization;
 
 namespace NoNPL.Entities
 {
     /// <summary> Токен </summary>
     [DebuggerDisplay("b'{UTF8Value}': [{string.Join(',', Bytes)}]")]
+    [MessagePackObject(AllowPrivate = true)]
     public class Token : IEquatable<Token>
     {
         public Token(byte[] bytes)
@@ -18,6 +21,8 @@ namespace NoNPL.Entities
 
             _hashCode = CalculateHashCode();
         }
+
+        private Token() { }
 
         public Token(TokenPair frequensedPair)
         {
@@ -41,10 +46,16 @@ namespace NoNPL.Entities
             UTF8Value = Encoding.UTF8.GetString(Bytes);
         }
 
+        [JsonPropertyName("bytes")]
+        [Key(0)]
         public byte[] Bytes { get; private set; }
 
+        [IgnoreMember]
+        [JsonIgnore]  
         public string UTF8Value { get; init; }
 
+        [JsonIgnore]
+        [IgnoreMember]
         private readonly int _hashCode;
 
         public bool Equals(Token other)

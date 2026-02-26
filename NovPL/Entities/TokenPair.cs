@@ -1,11 +1,21 @@
-﻿using System;
+﻿using MessagePack;
+using System;
+using System.Text.Json.Serialization;
 
 namespace NoNPL.Entities
 {
+    [MessagePackObject]
     public readonly struct TokenPair : IEquatable<TokenPair>
     {
+        [JsonPropertyName("first")]
+        [Key(0)]
         public readonly Token First;
+
+        [JsonPropertyName("second")]
+        [Key(1)]
         public readonly Token Second;
+
+        [IgnoreMember]
         private readonly int _hashCode;
 
         public TokenPair(Token first, Token second) 
