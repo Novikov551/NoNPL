@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+	 <OutputType>Exe</OutputType>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -9,8 +9,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Benchmark\**" />
     <Compile Remove="Datasets\**" />
+    <EmbeddedResource Remove="Benchmark\**" />
     <EmbeddedResource Remove="Datasets\**" />
+    <None Remove="Benchmark\**" />
     <None Remove="Datasets\**" />
   </ItemGroup>
 
@@ -28,11 +31,6 @@
     <PackageReference Include="BenchmarkDotNet.Diagnostics.Windows" Version="0.15.8" />
     <PackageReference Include="MessagePack" Version="3.1.4" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.21.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="Benchmark\" />
-    <Folder Include="Results\" />
   </ItemGroup>
 
 </Project>

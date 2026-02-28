@@ -1,32 +1,30 @@
 ﻿using NoNPL;
 using NoNPL.Services.Serializers;
+using System.Runtime.InteropServices;
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-class Programm
+if (args.Length == 0)
 {
-    static async Task Main(string[] args)
-    {
-        if (args.Length == 0)
-        {
-            AdvancedConsole.WriteLine("Specify the path to dataset.", ConsoleMessageType.Error);
-            return;
-        }
-
-        var inputFilePath = args[0];
-
-        var pattern = @"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
-
-        var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-        var trainResultsPath = Path.Combine(baseDirectory, "TrainResults");
-
-        var tokenizer = new BPETokenizer(pattern, trainResultsPath, VocabFileFormat.MessagePack);
-
-        await tokenizer.TrainAsync(inputFilePath,
-            "<|endoftext|>",
-            10000);
-    }
+    AdvancedConsole.WriteLine("Specify the path to dataset.", ConsoleMessageType.Error);
+    return;
 }
+else
+{
+    var inputFilePath = args[0];
 
+    var pattern = @"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
+
+    var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+    var trainResultsPath = Path.Combine(baseDirectory, "TrainResults");
+
+    var tokenizer = new BPETokenizer(pattern, trainResultsPath, VocabFileFormat.MessagePack);
+
+    AdvancedConsole.WriteLine("Specify the path to dataset.", ConsoleMessageType.Error);
+
+    await tokenizer.TrainAsync(inputFilePath,
+        "<|endoftext|>",
+        10000);
+}
 
 
 
