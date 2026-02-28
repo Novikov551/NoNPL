@@ -29,7 +29,8 @@ public class BPETokenizer
     private readonly VocabStorage _vocabStorage;
 
     public BPETokenizer(string pattern,
-        string saveFolderLocation)
+        string resultsFolderLocation,
+        VocabFileFormat fileFormat)
     {
         _pattern = new Regex(pattern, RegexOptions.Compiled);
         _vocab = new();
@@ -40,7 +41,7 @@ public class BPETokenizer
         _tokenPairsCount = new();
         _tXTDatasetReader = new();
 
-        _vocabStorage = new VocabStorage(saveFolderLocation, SerializerFactory.Create(SerializerFormat.Json));
+        _vocabStorage = new VocabStorage(resultsFolderLocation, SerializerFactory.Create(fileFormat));
     }
 
     public async Task LoadVocab(CancellationToken ct = default)
@@ -61,7 +62,7 @@ public class BPETokenizer
     public async Task TrainAsync(string filePath,
         string tokenSeparator,
         int vocabSize,
-        int maxConcurrent = 12,
+        int maxConcurrent = 20,
         CancellationToken ct = default)
     {
         var generalStopwatch = Stopwatch.StartNew();

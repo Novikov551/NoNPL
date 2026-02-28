@@ -1,6 +1,6 @@
 ﻿namespace NoNPL.Services.Serializers
 {
-    public enum SerializerFormat
+    public enum VocabFileFormat
     {
         Json,
         MessagePack

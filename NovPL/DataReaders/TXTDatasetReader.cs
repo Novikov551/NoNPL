@@ -10,7 +10,7 @@ public class TXTDatasetReader
     public async Task<ConcurrentDictionary<int, string>> ReadTXTDatasetAsync(
         string filePath,
         string tokenSeparator,
-        int maxConcurrent = 12,
+        int maxConcurrent = 20,
         int bufferSize = 1048576,
         CancellationToken ct = default)
     {

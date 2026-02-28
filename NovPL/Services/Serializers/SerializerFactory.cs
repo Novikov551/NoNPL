@@ -2,12 +2,12 @@
 {
     public static class SerializerFactory
     {
-        public static ISerializer Create(SerializerFormat format)
+        public static ISerializer Create(VocabFileFormat format)
         {
             return format switch
             {
-                SerializerFormat.Json => new JsonSerializer(),
-                SerializerFormat.MessagePack => new MessagePackSerializer(),
+                VocabFileFormat.Json => new JsonSerializer(),
+                VocabFileFormat.MessagePack => new MessagePackSerializer(),
                 _ => throw new ArgumentOutOfRangeException(nameof(format))
             };
         }
