@@ -1,6 +1,5 @@
 ﻿using NoNPL;
 using NoNPL.Services.Serializers;
-using System.Runtime.InteropServices;
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 if (args.Length == 0)
@@ -19,11 +18,12 @@ else
 
     var tokenizer = new BPETokenizer(pattern, trainResultsPath, VocabFileFormat.MessagePack);
 
-    AdvancedConsole.WriteLine("Specify the path to dataset.", ConsoleMessageType.Error);
-
     await tokenizer.TrainAsync(inputFilePath,
         "<|endoftext|>",
-        10000);
+        10000,
+        Environment.ProcessorCount);
+
+    await tokenizer.SaveVocabAsync();
 }
 
 

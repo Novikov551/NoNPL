@@ -47,7 +47,6 @@ public class BPETokenizer
     public async Task LoadVocab(CancellationToken ct = default)
     {
         var (vocab, merges, latestVersion) = await _vocabStorage.LoadLatestAsync(ct);
-        AdvancedConsole.WriteLine($"Загружена последняя версия {latestVersion} с {vocab.Count} токенам", ConsoleMessageType.Warning);
 
         _vocab = vocab;
         _merges = merges;
@@ -76,7 +75,7 @@ public class BPETokenizer
 
         AdvancedConsole.WriteLine($"Start training...");
 
-        ProcessChunks(chunks, tokenSeparator);
+        ProcessChunks(chunks, tokenSeparator, maxConcurrent);
 
         var stopwatch = Stopwatch.StartNew();
         AdvancedConsole.WriteLine($"Start merging pairs of bytes...");
@@ -351,7 +350,9 @@ public class BPETokenizer
         return true;
     }
 
-    private void ProcessChunks(ConcurrentDictionary<int, string> chunks, string tokenSeparator, int maxConcurrent = 12)
+    private void ProcessChunks(ConcurrentDictionary<int, string> chunks, 
+        string tokenSeparator, 
+        int maxConcurrent = 20)
     {
         var stopwatch = Stopwatch.StartNew();
         AdvancedConsole.WriteLine($"Launch of pre-tokenization...");
