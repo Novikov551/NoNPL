@@ -1,6 +1,6 @@
-{
+﻿{
   "profiles": {
-    "NovPL": {
+    "NoNPL": {
       "commandName": "Project"
     },
     "Container (Dockerfile)": {

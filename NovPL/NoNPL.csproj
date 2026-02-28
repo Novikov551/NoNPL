@@ -9,6 +9,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="Datasets\**" />
+    <EmbeddedResource Remove="Datasets\**" />
+    <None Remove="Datasets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="TestsFiles\pretokens.txt" />
   </ItemGroup>
 
@@ -26,7 +32,6 @@
 
   <ItemGroup>
     <Folder Include="Benchmark\" />
-    <Folder Include="Datasets\" />
     <Folder Include="Results\" />
   </ItemGroup>
 
