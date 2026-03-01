@@ -79,17 +79,17 @@ public class BPETokenizer
 
         var stopwatch = Stopwatch.StartNew();
         AdvancedConsole.WriteLine($"Start merging pairs of bytes...");
-/*
-        var counter = _vocab.Count;*/
+
+        var counter = _vocab.Count;
         var result = true;
         while (result && _vocab.Count <= vocabSize)
         {
             result = MergePairs();
-           /* if (counter % 10 == 0)
+            if (counter % 10 == 0)
             {
                 AdvancedConsole.WriteProgress(_vocab.Count, vocabSize, "Progress:", 50, ConsoleMessageType.Warning);
             }
-            counter++;*/
+            counter++;
         }
 
         AdvancedConsole.WriteLine($"Completing the merging of byte pairs... Duration: {stopwatch.Elapsed:mm\\:ss\\.ff}\n", ConsoleMessageType.Success);
@@ -365,19 +365,19 @@ public class BPETokenizer
 
         int totalChunks = chunks.Count;
         int processedChunksCounter = 0;
-/*        object lockObj = new object();*/
+        object lockObj = new object();
         Parallel.ForEach(partitioner, options, chunk =>
         {
             ProcessChunk(chunk, tokenSeparator);
 
-           /* Interlocked.Increment(ref processedChunksCounter);
+           Interlocked.Increment(ref processedChunksCounter);
 
-            var current = Interlocked.CompareExchange(ref processedChunksCounter, 0, 0);*/
+            var current = Interlocked.CompareExchange(ref processedChunksCounter, 0, 0);
 
-           /* lock (lockObj)
+           lock (lockObj)
             {
                 AdvancedConsole.WriteProgress(current, totalChunks, "Progress:", 50, ConsoleMessageType.Warning);
-            }*/
+            }
         });
 
         AdvancedConsole.WriteLine($"\nPre-tokenization is complete. Duration {stopwatch.Elapsed:mm\\:ss\\.ff}", ConsoleMessageType.Success);
