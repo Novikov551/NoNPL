@@ -52,10 +52,12 @@ else
 
     var tokenizer = new BPETokenizer(pattern, trainResultsPath, fileFormat);
 
+    AdvancedConsole.WriteLine($"Лог-процессоров:{ Environment.ProcessorCount}", ConsoleMessageType.Warning);
+
     await tokenizer.TrainAsync(inputFilePath,
         "<|endoftext|>",
         vocabSize,
-        Environment.ProcessorCount);
+        32);
 
     await tokenizer.SaveVocabAsync();
 }

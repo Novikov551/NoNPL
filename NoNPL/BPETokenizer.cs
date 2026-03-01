@@ -61,7 +61,7 @@ public class BPETokenizer
     public async Task TrainAsync(string filePath,
         string tokenSeparator,
         int vocabSize,
-        int maxConcurrent = 20,
+        int maxConcurrent = 32,
         CancellationToken ct = default)
     {
         var generalStopwatch = Stopwatch.StartNew();
@@ -352,7 +352,7 @@ public class BPETokenizer
 
     private void ProcessChunks(ConcurrentDictionary<int, string> chunks, 
         string tokenSeparator, 
-        int maxConcurrent = 20)
+        int maxConcurrent = 32)
     {
         var stopwatch = Stopwatch.StartNew();
         AdvancedConsole.WriteLine($"Launch of pre-tokenization...");

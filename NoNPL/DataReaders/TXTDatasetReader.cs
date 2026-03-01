@@ -10,7 +10,7 @@ public class TXTDatasetReader
     public async Task<ConcurrentDictionary<int, string>> ReadTXTDatasetAsync(
         string filePath,
         string tokenSeparator,
-        int maxConcurrent = 20,
+        int maxConcurrent = 32,
         int bufferSize = 1048576,
         CancellationToken ct = default)
     {
@@ -102,7 +102,7 @@ public class TXTDatasetReader
         FileStream fileStream,
         byte[] splitSpecialToken,
         int bufferSize = 1048576,
-        int maxConcurrent = 20)
+        int maxConcurrent = 32)
     {
         if (splitSpecialToken == null || splitSpecialToken.Length == 0)
             throw new ArgumentException("Специальный токен должен быть непустым массивом байт", nameof(splitSpecialToken));
