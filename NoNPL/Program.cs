@@ -57,7 +57,7 @@ else
     await tokenizer.TrainAsync(inputFilePath,
         "<|endoftext|>",
         vocabSize,
-        32);
+        Environment.ProcessorCount);
 
     await tokenizer.SaveVocabAsync();
 }

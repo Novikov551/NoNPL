@@ -36,7 +36,7 @@ public class TXTDatasetReader
             boundaries = FindChunkBoundaries(
                  fileStream,
                  splitToken,
-                 maxConcurrent);
+                 maxConcurrent: maxConcurrent);
         }
 
         var actualNumChunks = boundaries.Count - 1;
