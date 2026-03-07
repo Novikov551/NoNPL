@@ -23,8 +23,35 @@ public static class AdvancedConsole
         Console.ForegroundColor = previousColor;
     }
 
-    public static void WriteProgress(int current,
-        int total, 
+    public static void WriteProgress(double current,
+        string message = "",
+        int barLength = 50,
+        ConsoleMessageType type = ConsoleMessageType.Default)
+    {
+
+        var percent = current;
+        var progress = (int)(percent * barLength);
+
+        var bar = new string('█', progress) + new string('░', barLength - progress);
+
+        var position = Console.GetCursorPosition();
+
+        if (_lastProgressLine != position.Top && _lastProgressLine != -1)
+        {
+            Console.SetCursorPosition(0, _lastProgressLine);
+        }
+
+        var previousColor = Console.ForegroundColor;
+
+        SetConsoleColor(type);
+        Console.Write($"\r{message} [{bar}] ({percent:P1})");
+        Console.ForegroundColor = previousColor;
+
+        _lastProgressLine = Console.GetCursorPosition().Top;
+    }
+
+    public static void WriteProgress(long current,
+        long total,
         string message = "",
         int barLength = 50,
         ConsoleMessageType type = ConsoleMessageType.Default)

@@ -1,33 +1,70 @@
-﻿using System.Text;
+﻿using System;
+using System.Buffers;
+using System.Text;
 
 namespace NoNPL.Entities
 {
     public static class UTF8Converter
     {
-        private static readonly Encoding _utf8WithoutBOM = new UTF8Encoding(false);
+        private static readonly Encoding _utf8 = new UTF8Encoding(false);
 
-        public static string GetString(byte[] buffer, int index, int totalBytesRead)
+        public static string GetString(ReadOnlySpan<byte> bytes)
         {
-            var str = _utf8WithoutBOM.GetString(buffer, index, totalBytesRead);
-
-            // Быстрая проверка на BOM
-            if (str.Length > 0 && str[0] == '\uFEFF')
-            {
-                return str.Substring(1);
-            }
-
-            return str;
+            return _utf8.GetString(bytes);
         }
 
-        public static byte[] GetBytes(string value)
+        public static byte[] GetBytes(ReadOnlySpan<char> chars)
         {
-            // Быстрая проверка на BOM
-            if (value.Length > 0 && value[0] == '\uFEFF')
+            chars = StripBom(chars);
+            int byteCount = _utf8.GetByteCount(chars);
+            byte[] bytes = new byte[byteCount];
+            _utf8.GetBytes(chars, bytes);
+            return bytes;
+        }
+
+        public static int GetCharCount(ReadOnlySpan<byte> bytes)
+        {
+            return _utf8.GetCharCount(bytes);
+        }
+
+        public static int GetChars(ReadOnlySpan<byte> bytes, Span<char> chars)
+        {
+            return _utf8.GetChars(bytes, chars);
+        }
+
+        public static DecodedSpan DecodeToSpan(ReadOnlySpan<byte> bytes)
+        {
+            int charCount = _utf8.GetCharCount(bytes);
+            char[] rented = ArrayPool<char>.Shared.Rent(charCount);
+            int written = _utf8.GetChars(bytes, rented);
+            return new DecodedSpan(rented, written);
+        }
+
+        public ref struct DecodedSpan
+        {
+            private readonly char[] _rented;
+            private readonly int _length;
+
+            internal DecodedSpan(char[] rented, int length)
             {
-                value = value.Substring(1);
+                _rented = rented;
+                _length = length;
             }
 
-            return _utf8WithoutBOM.GetBytes(value);
+            public ReadOnlySpan<char> Span => _rented.AsSpan(0, _length);
+
+            public void Dispose()
+            {
+                if (_rented != null)
+                    ArrayPool<char>.Shared.Return(_rented);
+            }
+        }
+
+        private static ReadOnlySpan<char> StripBom(ReadOnlySpan<char> span)
+        {
+            if (span.Length > 0 && span[0] == '\uFEFF')
+                return span.Slice(1);
+            return span;
         }
     }
 }

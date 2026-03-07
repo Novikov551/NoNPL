@@ -1,194 +1,172 @@
-﻿using NoNPL.Entities;
-using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Reflection;
+﻿using System;
+using System.Buffers;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
+
 namespace NoNPL.DataReaders;
 
 public class TXTDatasetReader
 {
-    public async Task<ConcurrentDictionary<int, string>> ReadTXTDatasetAsync(
-        string filePath,
-        string tokenSeparator,
-        int maxConcurrent = 32,
-        int bufferSize = 1048576,
-        CancellationToken ct = default)
+    public async IAsyncEnumerable<List<ReadOnlyMemory<byte>>> ReadTXTDatasetAsync(
+      string filePath,
+      byte[] tokenBytes,
+      int maxConcurrent = 32,
+      long bufferSize = 100 * 1024 * 1024,
+      int readBufferSize = 81920,
+      [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var splitToken = Encoding.UTF8.GetBytes(tokenSeparator);
-        var semaphore = new SemaphoreSlim(maxConcurrent);
-        var fileInfo = new FileInfo(filePath);
-        var fileSize = fileInfo.Length;
-        var chunkData = new ConcurrentDictionary<int, string>();
-        var tasks = new List<Task>();
-
-        var stopwatch = Stopwatch.StartNew();
-
-        AdvancedConsole.WriteLine($"Starting reading... File size: {Decimal.Round((fileSize / 1024m / 1024m), 2)} Мбайт");
-
-        List<long> boundaries;
-        using (var fileStream = new FileStream(filePath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            bufferSize,
-            true))
+        using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
         {
-            boundaries = FindChunkBoundaries(
-                 fileStream,
-                 splitToken,
-                 maxConcurrent: maxConcurrent);
-        }
+            byte[] buffer = new byte[bufferSize];
+            int bytesRead;
 
-        var actualNumChunks = boundaries.Count - 1;
-        AdvancedConsole.WriteLine($"Found {actualNumChunks} chunks");
-
-        for (var i = 0; i < actualNumChunks; i++)
-        {
-            var chunkIndex = i;
-            var start = boundaries[i];
-            var end = boundaries[i + 1];
-            var chunkLength = end - start;
-
-            await semaphore.WaitAsync(ct);
-
-            tasks.Add(Task.Run(async () =>
+            while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
             {
-                using (var fileStream = new FileStream(filePath,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.Read,
-                    bufferSize,
-                    true))
-                {
-                    // Создаем буфер для чанка
-                    var buffer = new byte[chunkLength];
-
-                    // Перемещаемся к началу чанка
-                    fileStream.Seek(start, SeekOrigin.Begin);
-
-                    // Читаем весь чанк
-                    var totalBytesRead = 0;
-                    int bytesRead;
-
-                    // Читаем частями на случай большого чанка
-                    while (totalBytesRead < chunkLength &&
-                           (bytesRead = await fileStream.ReadAsync(
-                               buffer,
-                               totalBytesRead,
-                               (int)Math.Min(bufferSize, chunkLength - totalBytesRead),
-                               ct)) > 0)
-                    {
-                        totalBytesRead += bytesRead;
-                    }
-
-                    var chunk = UTF8Converter.GetString(buffer, 0, totalBytesRead);
-
-                    chunkData[chunkIndex] = chunk;
-                }
-            }));
-        }
-
-        await Task.WhenAll(tasks);
-
-        AdvancedConsole.WriteLine($"Reading completed. Duration: {stopwatch.Elapsed:mm\\:ss\\.ff}",
-            ConsoleMessageType.Success);
-
-        stopwatch.Stop();
-
-        return chunkData;
-    }
-
-    private static List<long> FindChunkBoundaries(
-        FileStream fileStream,
-        byte[] splitSpecialToken,
-        int bufferSize = 1048576,
-        int maxConcurrent = 32)
-    {
-        if (splitSpecialToken == null || splitSpecialToken.Length == 0)
-            throw new ArgumentException("Специальный токен должен быть непустым массивом байт", nameof(splitSpecialToken));
-
-        var fileSize = fileStream.Length;
-        var chunkSize = fileSize / maxConcurrent;
-
-        var chunkBoundaries = new List<long>();
-        for (int i = 0; i <= maxConcurrent; i++)
-        {
-            chunkBoundaries.Add(i * chunkSize);
-        }
-        chunkBoundaries[maxConcurrent] = fileSize;
-
-        var tokenLength = splitSpecialToken.Length;
-
-        var chunkBufferSize = bufferSize + tokenLength - 1;
-
-        for (var bi = 1; bi < chunkBoundaries.Count - 1; bi++)
-        {
-            var initialPosition = chunkBoundaries[bi];
-            var currentPosition = initialPosition;
-            var previousRemaining = Array.Empty<byte>();
-
-            while (true)
-            {
-                fileStream.Seek(currentPosition, SeekOrigin.Begin);
-                var buffer = new byte[chunkBufferSize];
-                var bytesRead = fileStream.Read(buffer, 0, chunkBufferSize);
-
-                if (bytesRead == 0)
-                {
-                    chunkBoundaries[bi] = fileSize;
-                    break;
-                }
-
-                byte[] searchBuffer;
-                if (previousRemaining.Length > 0)
-                {
-                    searchBuffer = new byte[previousRemaining.Length + bytesRead];
-                    Array.Copy(previousRemaining, 0, searchBuffer, 0, previousRemaining.Length);
-                    Array.Copy(buffer, 0, searchBuffer, previousRemaining.Length, bytesRead);
-                }
-                else
-                {
-                    searchBuffer = new byte[bytesRead];
-                    Array.Copy(buffer, 0, searchBuffer, 0, bytesRead);
-                }
-
-                var foundIndex = FindSequence(searchBuffer, splitSpecialToken, searchBuffer.Length);
-                if (foundIndex != -1)
-                {
-                    chunkBoundaries[bi] = currentPosition - previousRemaining.Length + foundIndex;
-                    break;
-                }
-
-                var keepBytes = Math.Min(tokenLength - 1, bytesRead);
-                previousRemaining = new byte[keepBytes];
-                Array.Copy(buffer, bytesRead - keepBytes, previousRemaining, 0, keepBytes);
-
-                currentPosition += bufferSize;
-
-                if (currentPosition >= fileSize)
-                {
-                    chunkBoundaries[bi] = fileSize;
-                    break;
-                }
+                
             }
         }
 
-        return chunkBoundaries.Distinct().OrderBy(x => x).ToList();
+        byte[] leftover = [];
+        long fileSize = new FileInfo(filePath).Length;
+        long totalBytesRead = 0;
+
+        using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, readBufferSize, true);
+
+        while (totalBytesRead < fileSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            byte[] readBuffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(bufferSize, fileSize - totalBytesRead));
+            try
+            {
+                int bytesRead = await fs.ReadAsync(readBuffer, 0, (int)Math.Min(bufferSize, fileSize - totalBytesRead), cancellationToken);
+                if (bytesRead == 0) break;
+                totalBytesRead += bytesRead;
+
+                byte[] data = ArrayPool<byte>.Shared.Rent(bytesRead);
+                Array.Copy(readBuffer, data, bytesRead);
+
+                int combinedLength = leftover.Length + bytesRead;
+                byte[] combined = ArrayPool<byte>.Shared.Rent(combinedLength);
+                if (leftover.Length > 0)
+                {
+                    Array.Copy(leftover, 0, combined, 0, leftover.Length);
+                }
+                Array.Copy(data, 0, combined, leftover.Length, bytesRead);
+
+                ArrayPool<byte>.Shared.Return(data);
+
+                int lastTokenEnd = FindLastTokenEnd(combined, combinedLength, tokenBytes);
+                if (lastTokenEnd == -1)
+                {
+                    lastTokenEnd = combinedLength;
+                }
+
+                byte[] chunkWithToken = ArrayPool<byte>.Shared.Rent(lastTokenEnd);
+                Array.Copy(combined, 0, chunkWithToken, 0, lastTokenEnd);
+
+                int leftoverLength = combinedLength - lastTokenEnd;
+                byte[] newLeftover = new byte[leftoverLength];
+                Array.Copy(combined, lastTokenEnd, newLeftover, 0, leftoverLength);
+                leftover = newLeftover; 
+
+                ArrayPool<byte>.Shared.Return(combined);
+
+                var stories = SplitByToken(chunkWithToken, lastTokenEnd, tokenBytes);
+
+                ArrayPool<byte>.Shared.Return(chunkWithToken);
+
+                var batch = new List<ReadOnlyMemory<byte>>(maxConcurrent);
+                foreach (var story in stories)
+                {
+                    batch.Add(story.AsMemory());
+                    if (batch.Count >= maxConcurrent)
+                    {
+                        yield return batch;
+                        batch = new List<ReadOnlyMemory<byte>>(maxConcurrent);
+                    }
+                }
+
+                if (batch.Count > 0)
+                    yield return batch;
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(readBuffer);
+            }
+        }
+
+        if (leftover.Length > 0)
+        {
+            var lastStories = SplitByToken(leftover, leftover.Length, tokenBytes);
+            foreach (var story in lastStories)
+            {
+                yield return new List<ReadOnlyMemory<byte>> { story.AsMemory() };
+            }
+        }
     }
 
-    private static int FindSequence(byte[] source,
-        byte[] pattern,
-        int sourceLength)
+    private static int FindLastTokenEnd(byte[] data, int dataLength, byte[] token)
     {
-        if (pattern.Length == 0) return 0;
-        if (pattern.Length > sourceLength) return -1;
-
-        for (var i = 0; i <= sourceLength - pattern.Length; i++)
+        for (int i = dataLength - token.Length; i >= 0; i--)
         {
             bool found = true;
-            for (var j = 0; j < pattern.Length; j++)
+            for (int j = 0; j < token.Length; j++)
             {
-                if (source[i + j] != pattern[j])
+                if (data[i + j] != token[j])
+                {
+                    found = false;
+                    break;
+                }
+            }
+            if (found) return i + token.Length;
+        }
+        return -1;
+    }
+
+    private static IEnumerable<byte[]> SplitByToken(byte[] data, int dataLength, byte[] token)
+    {
+        int start = 0;
+        while (start <= dataLength)
+        {
+            int tokenPos = FindFirstToken(data, dataLength, token, start);
+            if (tokenPos == -1)
+            {
+                int length = dataLength - start;
+                if (length > 0)
+                {
+                    byte[] part = new byte[length];
+                    Array.Copy(data, start, part, 0, length);
+                    yield return part;
+                }
+                break;
+            }
+            else
+            {
+                int partLength = tokenPos - start;
+                if (partLength > 0)
+                {
+                    byte[] part = new byte[partLength];
+                    Array.Copy(data, start, part, 0, partLength);
+                    yield return part;
+                }
+                start = tokenPos + token.Length;
+            }
+        }
+    }
+
+    private static int FindFirstToken(byte[] data, int dataLength, byte[] token, int startIndex)
+    {
+        for (int i = startIndex; i <= dataLength - token.Length; i++)
+        {
+            bool found = true;
+            for (int j = 0; j < token.Length; j++)
+            {
+                if (data[i + j] != token[j])
                 {
                     found = false;
                     break;

@@ -1,5 +1,4 @@
 ﻿using BenchmarkDotNet.Attributes;
-using NoNPL.Comparers;
 using NoNPL.DataReaders;
 using NoNPL.Entities;
 using NoNPL.Extensions;
@@ -24,15 +23,13 @@ public class BPETokenizer
     private ConcurrentDictionary<TokenPair, HashSet<PreToken>> _tokenPairsHashSet;
     private ConcurrentDictionary<TokenPair, int> _tokenPairsCount;
 
-    private readonly Regex _pattern;
+    private readonly static Regex _pattern = new Regex(@"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+", RegexOptions.Compiled);
     private readonly TXTDatasetReader _tXTDatasetReader;
     private readonly VocabStorage _vocabStorage;
 
-    public BPETokenizer(string pattern,
-        string resultsFolderLocation,
+    public BPETokenizer(string resultsFolderLocation,
         VocabFileFormat fileFormat)
     {
-        _pattern = new Regex(pattern, RegexOptions.Compiled);
         _vocab = new();
         _merges = new();
         _preTokens = new();
@@ -66,16 +63,21 @@ public class BPETokenizer
     {
         var generalStopwatch = Stopwatch.StartNew();
 
-        InitVocabularity([tokenSeparator]);
+        InitVocabularity();
+        var tokenSeparatorBytes = UTF8Converter.GetBytes(tokenSeparator);
 
-        var chunks = await _tXTDatasetReader.ReadTXTDatasetAsync(filePath, 
-            tokenSeparator,
-            maxConcurrent: maxConcurrent, 
-            ct: ct);
+        var chunksResults = new List<ProcessedChunkResult>();
 
-        AdvancedConsole.WriteLine($"Start training...");
+        await foreach (var chunks in _tXTDatasetReader.ReadTXTDatasetAsync(filePath,
+            tokenSeparatorBytes,
+            maxConcurrent,
+            1000 * 1024 * 1024,
+            81920))
+        {
+            var results = ProcessChunks(chunks, tokenSeparatorBytes, maxConcurrent);
 
-        ProcessChunks(chunks, tokenSeparator, maxConcurrent);
+            chunksResults.AddRange(chunksResults);
+        }
 
         var stopwatch = Stopwatch.StartNew();
         AdvancedConsole.WriteLine($"Start merging pairs of bytes...");
@@ -93,12 +95,6 @@ public class BPETokenizer
         }
 
         AdvancedConsole.WriteLine($"Completing the merging of byte pairs... Duration: {stopwatch.Elapsed:mm\\:ss\\.ff}\n", ConsoleMessageType.Success);
-
-        var maxId = _vocab.Max(e => e.Value);
-
-        var bytes = Encoding.UTF8.GetBytes(tokenSeparator);
-        var token = new Token(bytes);
-        _vocab.TryAdd(token, maxId + 1);
 
         AdvancedConsole.WriteLine($"Dataset processed. Duration: {generalStopwatch.Elapsed:mm\\:ss\\.ff}\n", ConsoleMessageType.Success);
 
@@ -198,10 +194,10 @@ public class BPETokenizer
 
                     currentTokens = newTokens;
                     pairFound = true;
-                    break; 
+                    break;
                 }
             }
-        } while (pairFound); 
+        } while (pairFound);
 
         var result = new List<int>();
         foreach (var token in currentTokens)
@@ -350,131 +346,118 @@ public class BPETokenizer
         return true;
     }
 
-    private void ProcessChunks(ConcurrentDictionary<int, string> chunks, 
-        string tokenSeparator, 
+    private List<ProcessedChunkResult> ProcessChunks(List<ReadOnlyMemory<byte>> chunks,
+        byte[] tokenSeparator,
         int maxConcurrent = 32)
     {
-        var stopwatch = Stopwatch.StartNew();
-        AdvancedConsole.WriteLine($"Launch of pre-tokenization...");
-
         var partitioner = Partitioner.Create(chunks, EnumerablePartitionerOptions.NoBuffering);
         var options = new ParallelOptions
         {
-            MaxDegreeOfParallelism = maxConcurrent - 6
+            MaxDegreeOfParallelism = maxConcurrent
         };
 
-        int totalChunks = chunks.Count;
-        int processedChunksCounter = 0;
-        object lockObj = new object();
+        var chunksResults = new List<ProcessedChunkResult>(chunks.Count);
+        var lockobj = new object();
+
         Parallel.ForEach(partitioner, options, chunk =>
         {
-            ProcessChunk(chunk, tokenSeparator);
+            var chunkResult = ProcessChunk(chunk, tokenSeparator);
 
-           Interlocked.Increment(ref processedChunksCounter);
-
-            var current = Interlocked.CompareExchange(ref processedChunksCounter, 0, 0);
-
-           lock (lockObj)
+            lock(lockobj)
             {
-                AdvancedConsole.WriteProgress(current, totalChunks, "Progress:", 50, ConsoleMessageType.Warning);
+                chunksResults.Add(chunkResult);
             }
         });
 
-        AdvancedConsole.WriteLine($"\nPre-tokenization is complete. Duration {stopwatch.Elapsed:mm\\:ss\\.ff}", ConsoleMessageType.Success);
-        stopwatch.Stop();
+        return chunksResults;
     }
 
-    private List<string> GetChunkBlocks(KeyValuePair<int, string> chunk, string tokenSeparator)
+    private List<ReadOnlyMemory<byte>> GetChunkBlocks(ReadOnlyMemory<byte> chunk, byte[] tokenSeparator)
     {
-        var text = chunk.Value.AsSpan();
-        var separator = tokenSeparator.AsSpan();
-        var chunkBlocks = new List<string>();
+        var span = chunk.Span;
+        var separatorSpan = tokenSeparator.AsSpan();
+        var result = new List<ReadOnlyMemory<byte>>();
 
-        var start = 0;
+        int start = 0;
         while (true)
         {
-            int end = text.Slice(start).IndexOf(separator, StringComparison.Ordinal);
+            int end = span.Slice(start).IndexOf(separatorSpan);
             if (end == -1)
             {
-                // Последний блок
-                if (start < text.Length)
-                    chunkBlocks.Add(text.Slice(start).ToString());
+                // Последний блок (до конца)
+                if (start < span.Length)
+                {
+                    result.Add(chunk.Slice(start));
+                }
                 break;
             }
 
-            end += start; // Абсолютная позиция
+            end += start; // абсолютная позиция начала разделителя
 
-            if (end > start) // Пропускаем пустые блоки
-                chunkBlocks.Add(text.Slice(start, end - start).ToString());
+            // Добавляем блок перед разделителем, если он не пустой
+            if (end > start)
+            {
+                result.Add(chunk.Slice(start, end - start));
+            }
 
-            start = end + separator.Length;
+            start = end + tokenSeparator.Length;
         }
 
-        return chunkBlocks;
+        return result;
     }
 
-    private void ProcessChunk(KeyValuePair<int, string> chunk, string tokenSeparator)
+    private ProcessedChunkResult ProcessChunk(ReadOnlyMemory<byte> chunk, byte[] tokenSeparator)
     {
-        //Получаем блоки текста внутри чанка
-        var chunkBlocks = GetChunkBlocks(chunk, tokenSeparator);
-
-        var capacity = chunk.Value.Length / 10;
-        var preTokens = new Dictionary<PreToken, int>();
+        var chunkBlocks = GetChunkBlocks(chunk, tokenSeparator); 
+        var capacity = chunk.Length / 5;
+        var preTokens = new Dictionary<PreToken, int>(capacity);
         var tokenPairData = new Dictionary<TokenPair, PairData>(capacity * 2);
 
-        //Проходимся по каждому блоку текста и претокенизируем его
-        for (var i = 0; i < chunkBlocks.Count; i++)
+        foreach (var block in chunkBlocks)
         {
-            foreach (ValueMatch match in _pattern.EnumerateMatches(chunkBlocks[i]))
+            var decoded = UTF8Converter.DecodeToSpan(block.Span);
+            foreach (var match in _pattern.EnumerateMatches(decoded.Span))
             {
-                var matchValue = chunkBlocks[i].AsSpan(match.Index, match.Length);
-                var preToken = new PreToken(matchValue.ToString());
+                var matchValue = decoded.Span.Slice(match.Index, match.Length);
+                var preToken = new PreToken(matchValue);
 
                 if (preToken.Tokens.IsNullOrEmpty())
-                {
                     continue;
-                }
 
-                ref int preTokenCount = ref CollectionsMarshal.GetValueRefOrAddDefault(preTokens, preToken, out bool exists);
-                preTokenCount += 1;
+                ref int preTokenCount = ref CollectionsMarshal.GetValueRefOrAddDefault(preTokens, preToken, out _);
+                preTokenCount++;
 
-                // Если претокен состоит из одного токена, пропускаем
-                var tokens = preToken.Tokens;
-                if (tokens.Count <= 1) continue;
+                if (preToken.Tokens.Count <= 1)
+                    continue;
 
-                // Обрабатываем все пары токенов в претокене
-                ProcessTokenPairs(tokens.Select(e => e.Value).ToList(), preToken, preTokenCount, tokenPairData);
+                ProcessTokenPairs(preToken, preTokenCount, tokenPairData);
             }
         }
 
-        // Мержим результаты
-        BulkInsertPreTokens(preTokens);
-        BulkInsertTokenPairData(tokenPairData);
+        return new ProcessedChunkResult(preTokens, tokenPairData);
     }
 
-    // Вспомогательный метод для обработки пар токенов
     private void ProcessTokenPairs(
-        IReadOnlyList<Token> tokens,
         PreToken preToken,
         int preTokenCount,
         Dictionary<TokenPair, PairData> tokenPairData)
     {
-        for (int i = 1; i < tokens.Count; i++)
+        foreach(var token in preToken.Tokens)
         {
-            var tokenPair = new TokenPair(tokens[i - 1], tokens[i]);
-
-            ref PairData pairData = ref CollectionsMarshal.GetValueRefOrAddDefault(
-                tokenPairData, tokenPair, out bool exists);
-
-            if (!exists)
+            if(preToken.Tokens.TryGetValue(token.Key + 1, out var secondToken))
             {
-                pairData = new PairData(preToken);
-                pairData.Count = preTokenCount;
-            }
-            else
-            {
-                pairData.PreTokens.Add(preToken);
-                pairData.Count++;
+                var tokenPair = new TokenPair(token.Value, secondToken);
+
+                ref PairData pairData = ref CollectionsMarshal.GetValueRefOrAddDefault(tokenPairData, tokenPair, out bool exists);
+                if (!exists)
+                {
+                    pairData = new PairData(preToken) { Count = preTokenCount };
+                }
+                else
+                {
+                    pairData.PreTokens.Add(preToken);
+                    pairData.Count++;
+                }
             }
         }
     }
@@ -496,7 +479,7 @@ public class BPETokenizer
         }
     }
 
-    private void InitVocabularity(string[] specialTokens = null)
+    private void InitVocabularity()
     {
         _vocab.Clear();
 

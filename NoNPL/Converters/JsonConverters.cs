@@ -63,7 +63,7 @@ namespace NoNPL.Converters
                 writer.WriteNumberValue(b);
             }
             writer.WriteEndArray();
-            writer.WriteString("UTF8Value", value.UTF8Value);
+            writer.WriteString("UTF8Value", value.ToString());
             writer.WriteEndObject();
         }
 

@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text;
@@ -6,61 +7,38 @@ using System.Text;
 namespace NoNPL.Entities
 {
     /// <summary> Претокен </summary>
-    [DebuggerDisplay("b{UTF8Value}: [{string.Join(\", \", Tokens.Values)}]")]
     public class PreToken : IEquatable<PreToken>
     {
-        private static readonly Encoding _utf8WithoutBOM = new UTF8Encoding(false);
-
-        public PreToken(string preTokenValue)
+        public PreToken(ReadOnlySpan<char> preTokenValue)
         {
             Bytes = UTF8Converter.GetBytes(preTokenValue);
 
-            _hashCode = CalculateHashCode(Bytes);
-
-            if (Bytes.Length == 0) return;
+            if (Bytes.Length == 0)
+            {
+                Tokens = new Dictionary<int, Token>(0);
+                _hashCode = 0;
+                return;
+            }
 
             Tokens = new Dictionary<int, Token>(Bytes.Length);
-            if (Bytes.Length == 1)
-            {
-                Tokens[0] = SinglByteTokenCache.Tokens[Bytes[0]];
-            }
-            else
-            {
-                for (int i = 0; i < Bytes.Length; i++)
-                {
-                    Tokens[i] = SinglByteTokenCache.Tokens[Bytes[i]];
-                }
-            }
-
-            UTF8Value = preTokenValue;
+            
+            _hashCode = CalculateHashCode();
         }
 
         public byte[] Bytes { get; init; }
         public Dictionary<int, Token> Tokens { get; private set; }
-        public string UTF8Value { get; init; }
         private readonly int _hashCode;
 
-        private static int CalculateHashCode(byte[] bytes)
+        private int CalculateHashCode()
         {
-            if (bytes.Length == 0) return 0;
-
             unchecked
             {
                 int hash = 17;
-                // Обрабатываем по 4 байта за раз если возможно
-                int i = 0;
-                for (; i <= bytes.Length - 4; i += 4)
+                for (int i = 0; i < Bytes.Length; i++)
                 {
-                    hash = hash * 31 + bytes[i];
-                    hash = hash * 31 + bytes[i + 1];
-                    hash = hash * 31 + bytes[i + 2];
-                    hash = hash * 31 + bytes[i + 3];
-                }
-
-                // Оставшиеся байты
-                for (; i < bytes.Length; i++)
-                {
-                    hash = hash * 31 + bytes[i];
+                    byte b = Bytes[i];
+                    hash = hash * 31 + b;
+                    Tokens[i] = SinglByteTokenCache.Tokens[b];
                 }
                 return hash;
             }

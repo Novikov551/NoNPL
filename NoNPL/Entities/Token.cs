@@ -9,15 +9,13 @@ using System.Text.Json.Serialization;
 namespace NoNPL.Entities
 {
     /// <summary> Токен </summary>
-    [DebuggerDisplay("b'{UTF8Value}': [{string.Join(',', Bytes)}]")]
+    [DebuggerDisplay("{ToString()}")]
     [MessagePackObject(AllowPrivate = true)]
     public class Token : IEquatable<Token>
     {
         public Token(byte[] bytes)
         {
             Bytes = bytes;
-
-            UTF8Value = Encoding.UTF8.GetString(Bytes);
 
             _hashCode = CalculateHashCode();
         }
@@ -42,17 +40,11 @@ namespace NoNPL.Entities
             {
                 ArrayPool<byte>.Shared.Return(result);
             }
-
-            UTF8Value = Encoding.UTF8.GetString(Bytes);
         }
 
         [JsonPropertyName("bytes")]
         [Key(0)]
         public byte[] Bytes { get; private set; }
-
-        [IgnoreMember]
-        [JsonIgnore]  
-        public string UTF8Value { get; init; }
 
         [JsonIgnore]
         [IgnoreMember]
@@ -89,7 +81,7 @@ namespace NoNPL.Entities
 
         public override string ToString()
         {
-            return $"b'{UTF8Value}':[{string.Join(", ", Bytes)}]";
+            return $"b'{UTF8Converter.GetString(Bytes)}'";
         }
     }
 }

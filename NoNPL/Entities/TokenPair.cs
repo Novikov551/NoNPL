@@ -36,7 +36,7 @@ namespace NoNPL.Entities
 
         public override string ToString()
         {
-            return $"b'{First.UTF8Value} {Second.UTF8Value}':[{string.Join(", ", First.Bytes)},{string.Join(", ", Second.Bytes)}]";
+            return $"b'{First.ToString()} {Second.ToString()}':[{string.Join(", ", First.Bytes)},{string.Join(", ", Second.Bytes)}]";
         }
     }
 }

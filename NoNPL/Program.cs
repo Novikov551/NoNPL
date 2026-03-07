@@ -3,7 +3,7 @@ using NoNPL.Extensions;
 using NoNPL.Services.Serializers;
 Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-if (args.Length == 0)
+/*if (args.Length == 0)
 {
     AdvancedConsole.WriteLine("Specify the path to dataset.", ConsoleMessageType.Error);
     return;
@@ -44,20 +44,18 @@ else
         AdvancedConsole.WriteLine($"Некорректный пусть к датасету. Пожалуйсте, введите полный путь до файла.", ConsoleMessageType.Error);
         return;
     }
-
-    var pattern = @"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+";
-
+*/
     var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
     var trainResultsPath = Path.Combine(baseDirectory, "TrainResults");
 
-    var tokenizer = new BPETokenizer(pattern, trainResultsPath, fileFormat);
+    var tokenizer = new BPETokenizer(trainResultsPath, VocabFileFormat.Json);
 
     AdvancedConsole.WriteLine($"Лог-процессоров:{ Environment.ProcessorCount}", ConsoleMessageType.Warning);
 
-    await tokenizer.TrainAsync(inputFilePath,
+    await tokenizer.TrainAsync("C:\\Users\\nikit\\OneDrive\\Desktop\\Datasets\\TinyStories-train.txt",
         "<|endoftext|>",
-        vocabSize,
+        10000,
         Environment.ProcessorCount);
 
     await tokenizer.SaveVocabAsync();
-}
+/*}*/
