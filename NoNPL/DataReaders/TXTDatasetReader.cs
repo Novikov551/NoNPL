@@ -11,157 +11,156 @@ namespace NoNPL.DataReaders;
 
 public class TXTDatasetReader
 {
-    public async IAsyncEnumerable<List<ReadOnlyMemory<byte>>> ReadTXTDatasetAsync(
-      string filePath,
-      byte[] tokenBytes,
-      int maxConcurrent = 32,
-      long bufferSize = 100 * 1024 * 1024,
-      int readBufferSize = 81920,
-      [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<byte[]> ReadTXTDatasetAsync(
+        string filePath,
+        byte[] splitToken,
+        long bufferSize = 100 * 1024 * 1024,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
-        {
-            byte[] buffer = new byte[bufferSize];
-            int bytesRead;
+        if (string.IsNullOrEmpty(filePath))
+            throw new ArgumentException("File path cannot be null or empty.", nameof(filePath));
+        if (splitToken == null || splitToken.Length == 0)
+            throw new ArgumentException("Token bytes cannot be null or empty.", nameof(splitToken));
+        if (bufferSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(bufferSize), "Buffer size must be positive.");
 
-            while ((bytesRead = fs.Read(buffer, 0, buffer.Length)) > 0)
-            {
-                
-            }
-        }
+        using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 4096,
+            useAsync: true);
 
-        byte[] leftover = [];
-        long fileSize = new FileInfo(filePath).Length;
-        long totalBytesRead = 0;
+        byte[]? leftover = null; // Данные, не возвращённые из предыдущих итераций
+        int leftoverLength = 0;
+        int tokenLen = splitToken.Length;
 
-        using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, readBufferSize, true);
-
-        while (totalBytesRead < fileSize)
+        while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            byte[] readBuffer = ArrayPool<byte>.Shared.Rent((int)Math.Min(bufferSize, fileSize - totalBytesRead));
-            try
+            // Читаем очередной блок
+            byte[] buffer = new byte[bufferSize];
+            int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)
+                                         .ConfigureAwait(false);
+
+            // Пытаемся найти последнее вхождение токена в комбинации leftover + buffer
+            int posInCombined = FindLastTokenPosition(leftover, leftoverLength, buffer, bytesRead, splitToken);
+
+            if (posInCombined >= 0)
             {
-                int bytesRead = await fs.ReadAsync(readBuffer, 0, (int)Math.Min(bufferSize, fileSize - totalBytesRead), cancellationToken);
-                if (bytesRead == 0) break;
-                totalBytesRead += bytesRead;
+                // Токен найден – формируем фрагмент и остаток
+                int endPos = posInCombined + tokenLen;  // индекс первого байта после токена
 
-                byte[] data = ArrayPool<byte>.Shared.Rent(bytesRead);
-                Array.Copy(readBuffer, data, bytesRead);
+                // Фрагмент: все байты от начала объединения до endPos
+                byte[] fragment = new byte[endPos];
+                CopyCombinedData(leftover, leftoverLength, buffer, bytesRead, 0, fragment, endPos);
+                yield return fragment;
 
-                int combinedLength = leftover.Length + bytesRead;
-                byte[] combined = ArrayPool<byte>.Shared.Rent(combinedLength);
-                if (leftover.Length > 0)
+                // Остаток: данные после endPos
+                int remainingTotal = leftoverLength + bytesRead - endPos;
+                if (remainingTotal > 0)
                 {
-                    Array.Copy(leftover, 0, combined, 0, leftover.Length);
+                    byte[] newLeftover = new byte[remainingTotal];
+                    CopyCombinedData(leftover, leftoverLength, buffer, bytesRead, endPos, newLeftover, remainingTotal);
+                    leftover = newLeftover;
+                    leftoverLength = remainingTotal;
                 }
-                Array.Copy(data, 0, combined, leftover.Length, bytesRead);
-
-                ArrayPool<byte>.Shared.Return(data);
-
-                int lastTokenEnd = FindLastTokenEnd(combined, combinedLength, tokenBytes);
-                if (lastTokenEnd == -1)
+                else
                 {
-                    lastTokenEnd = combinedLength;
+                    leftover = null;
+                    leftoverLength = 0;
                 }
-
-                byte[] chunkWithToken = ArrayPool<byte>.Shared.Rent(lastTokenEnd);
-                Array.Copy(combined, 0, chunkWithToken, 0, lastTokenEnd);
-
-                int leftoverLength = combinedLength - lastTokenEnd;
-                byte[] newLeftover = new byte[leftoverLength];
-                Array.Copy(combined, lastTokenEnd, newLeftover, 0, leftoverLength);
-                leftover = newLeftover; 
-
-                ArrayPool<byte>.Shared.Return(combined);
-
-                var stories = SplitByToken(chunkWithToken, lastTokenEnd, tokenBytes);
-
-                ArrayPool<byte>.Shared.Return(chunkWithToken);
-
-                var batch = new List<ReadOnlyMemory<byte>>(maxConcurrent);
-                foreach (var story in stories)
-                {
-                    batch.Add(story.AsMemory());
-                    if (batch.Count >= maxConcurrent)
-                    {
-                        yield return batch;
-                        batch = new List<ReadOnlyMemory<byte>>(maxConcurrent);
-                    }
-                }
-
-                if (batch.Count > 0)
-                    yield return batch;
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(readBuffer);
-            }
-        }
-
-        if (leftover.Length > 0)
-        {
-            var lastStories = SplitByToken(leftover, leftover.Length, tokenBytes);
-            foreach (var story in lastStories)
-            {
-                yield return new List<ReadOnlyMemory<byte>> { story.AsMemory() };
-            }
-        }
-    }
-
-    private static int FindLastTokenEnd(byte[] data, int dataLength, byte[] token)
-    {
-        for (int i = dataLength - token.Length; i >= 0; i--)
-        {
-            bool found = true;
-            for (int j = 0; j < token.Length; j++)
-            {
-                if (data[i + j] != token[j])
-                {
-                    found = false;
-                    break;
-                }
-            }
-            if (found) return i + token.Length;
-        }
-        return -1;
-    }
-
-    private static IEnumerable<byte[]> SplitByToken(byte[] data, int dataLength, byte[] token)
-    {
-        int start = 0;
-        while (start <= dataLength)
-        {
-            int tokenPos = FindFirstToken(data, dataLength, token, start);
-            if (tokenPos == -1)
-            {
-                int length = dataLength - start;
-                if (length > 0)
-                {
-                    byte[] part = new byte[length];
-                    Array.Copy(data, start, part, 0, length);
-                    yield return part;
-                }
-                break;
             }
             else
             {
-                int partLength = tokenPos - start;
-                if (partLength > 0)
+                // Токен не найден
+                if (bytesRead < bufferSize) // Конец файла
                 {
-                    byte[] part = new byte[partLength];
-                    Array.Copy(data, start, part, 0, partLength);
-                    yield return part;
+                    // Возвращаем всё накопленное как последний фрагмент
+                    int total = leftoverLength + bytesRead;
+                    if (total > 0)
+                    {
+                        byte[] fragment = new byte[total];
+                        CopyCombinedData(leftover, leftoverLength, buffer, bytesRead, 0, fragment, total);
+                        yield return fragment;
+                    }
+                    yield break;
                 }
-                start = tokenPos + token.Length;
+                else
+                {
+                    // Сохраняем всё для следующего чтения
+                    int total = leftoverLength + bytesRead;
+                    byte[] newLeftover = new byte[total];
+                    CopyCombinedData(leftover, leftoverLength, buffer, bytesRead, 0, newLeftover, total);
+                    leftover = newLeftover;
+                    leftoverLength = total;
+                }
             }
         }
     }
 
-    private static int FindFirstToken(byte[] data, int dataLength, byte[] token, int startIndex)
+    // Поиск последнего вхождения токена в объединении двух массивов (leftover + buffer)
+    private int FindLastTokenPosition(byte[]? leftover, int leftoverLen, byte[] buffer, int bufferLen, byte[] token)
     {
-        for (int i = startIndex; i <= dataLength - token.Length; i++)
+        int tokenLen = token.Length;
+
+        // 1. Ищем в buffer (полное вхождение)
+        int posInBuffer = FindLastIndexOf(buffer, 0, bufferLen, token);
+        if (posInBuffer >= 0)
+            return leftoverLen + posInBuffer;
+
+        // 2. Ищем пересекающее вхождение (начало в leftover, конец в buffer)
+        if (leftoverLen > 0)
+        {
+            int startCheck = Math.Max(0, leftoverLen - tokenLen + 1);
+            for (int i = leftoverLen - 1; i >= startCheck; i--)
+            {
+                int needFromBuffer = tokenLen - (leftoverLen - i);
+                if (needFromBuffer <= bufferLen && needFromBuffer > 0)
+                {
+                    bool match = true;
+                    // Проверяем часть из leftover
+                    for (int j = 0; j < leftoverLen - i; j++)
+                    {
+                        if (leftover[i + j] != token[j])
+                        {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match)
+                    {
+                        // Проверяем часть из buffer
+                        for (int j = 0; j < needFromBuffer; j++)
+                        {
+                            if (buffer[j] != token[(leftoverLen - i) + j])
+                            {
+                                match = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (match)
+                        return i; // позиция начала токена в leftover
+                }
+            }
+        }
+
+        // 3. Ищем полное вхождение в leftover
+        if (leftoverLen > 0)
+            return FindLastIndexOf(leftover, 0, leftoverLen, token);
+
+        return -1;
+    }
+
+    // Поиск последнего вхождения подмассива в заданном диапазоне массива (наивный алгоритм)
+    private int FindLastIndexOf(byte[] data, int start, int length, byte[] token)
+    {
+        if (length < token.Length) return -1;
+        int lastPossible = start + length - token.Length;
+        for (int i = lastPossible; i >= start; i--)
         {
             bool found = true;
             for (int j = 0; j < token.Length; j++)
@@ -175,5 +174,26 @@ public class TXTDatasetReader
             if (found) return i;
         }
         return -1;
+    }
+
+    // Копирование части объединённых данных (leftover + buffer) в целевой массив,
+    // начиная с объединённого индекса sourceOffset и длиной count байт.
+    private void CopyCombinedData(byte[]? leftover, int leftoverLen, byte[] buffer, int bufferLen,
+                                         int sourceOffset, byte[] destination, int count)
+    {
+        int copied = 0;
+        if (sourceOffset < leftoverLen)
+        {
+            int fromLeftover = Math.Min(leftoverLen - sourceOffset, count);
+            Buffer.BlockCopy(leftover!, sourceOffset, destination, 0, fromLeftover);
+            copied = fromLeftover;
+            sourceOffset += fromLeftover;
+        }
+        if (copied < count && sourceOffset >= leftoverLen)
+        {
+            int bufferOffset = sourceOffset - leftoverLen;
+            int fromBuffer = Math.Min(bufferLen - bufferOffset, count - copied);
+            Buffer.BlockCopy(buffer, bufferOffset, destination, copied, fromBuffer);
+        }
     }
 }

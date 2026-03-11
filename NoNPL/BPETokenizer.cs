@@ -64,19 +64,16 @@ public class BPETokenizer
         var generalStopwatch = Stopwatch.StartNew();
 
         InitVocabularity();
-        var tokenSeparatorBytes = UTF8Converter.GetBytes(tokenSeparator);
+        var splitToken = UTF8Converter.GetBytes(tokenSeparator);
 
-        var chunksResults = new List<ProcessedChunkResult>();
-
-        await foreach (var chunks in _tXTDatasetReader.ReadTXTDatasetAsync(filePath,
-            tokenSeparatorBytes,
-            maxConcurrent,
-            1000 * 1024 * 1024,
-            81920))
+        await foreach (var textBlock in _tXTDatasetReader.ReadTXTDatasetAsync(filePath: filePath,
+            splitToken: splitToken,
+            bufferSize: 700 * 1024 * 1024,
+            cancellationToken: ct))
         {
-            var results = ProcessChunks(chunks, tokenSeparatorBytes, maxConcurrent);
+            var chunks = SplitTextBlockByToken(textBlock, splitToken, maxConcurrent);
 
-            chunksResults.AddRange(chunksResults);
+            ProcessChunks(chunks, splitToken, maxConcurrent);
         }
 
         var stopwatch = Stopwatch.StartNew();
@@ -99,6 +96,127 @@ public class BPETokenizer
         AdvancedConsole.WriteLine($"Dataset processed. Duration: {generalStopwatch.Elapsed:mm\\:ss\\.ff}\n", ConsoleMessageType.Success);
 
         generalStopwatch.Stop();
+    }
+
+    public static List<byte[]> SplitTextBlockByToken(byte[] fragment, byte[] tokenBytes, int maxConcurrent)
+    {
+        if (fragment == null) throw new ArgumentNullException(nameof(fragment));
+        if (tokenBytes == null || tokenBytes.Length == 0)
+            throw new ArgumentException("Token cannot be null or empty.", nameof(tokenBytes));
+        if (maxConcurrent <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxConcurrent), "maxConcurrent must be positive.");
+
+        // 1. Найти все позиции сразу после токена (концы записей)
+        var endPositions = new List<int>();
+        var dataSpan = fragment.AsSpan();
+        var tokenSpan = tokenBytes.AsSpan();
+        int pos = 0;
+        while (pos <= dataSpan.Length - tokenSpan.Length)
+        {
+            int idx = dataSpan.Slice(pos).IndexOf(tokenSpan);
+            if (idx < 0) break;
+            int absIdx = pos + idx;
+            endPositions.Add(absIdx + tokenSpan.Length);
+            pos = absIdx + tokenSpan.Length;
+        }
+
+        // Если токен не найден, возвращаем весь фрагмент как одну часть
+        if (endPositions.Count == 0)
+        {
+            return new List<byte[]> { fragment };
+        }
+
+        // Если последняя запись не доходит до конца фрагмента (хвост без токена), добавляем искусственную границу
+        if (endPositions.Last() < fragment.Length)
+        {
+            endPositions.Add(fragment.Length);
+        }
+
+        int recordCount = endPositions.Count; // количество записей (каждая заканчивается токеном или концом)
+        int desiredGroups = Math.Min(maxConcurrent, recordCount);
+
+        // Если желаемое количество групп равно количеству записей, возвращаем каждую запись отдельно
+        if (desiredGroups == recordCount)
+        {
+            var result = new List<byte[]>(recordCount);
+            int prev = 0;
+            foreach (int end in endPositions)
+            {
+                byte[] part = new byte[end - prev];
+                Array.Copy(fragment, prev, part, 0, part.Length);
+                result.Add(part);
+                prev = end;
+            }
+            return result;
+        }
+
+        // 2. Вычислить размеры записей и кумулятивные суммы
+        long[] cumulativeSizes = new long[recordCount];
+        int start = 0;
+        for (int i = 0; i < recordCount; i++)
+        {
+            int size = endPositions[i] - start;
+            cumulativeSizes[i] = (i == 0) ? size : cumulativeSizes[i - 1] + size;
+            start = endPositions[i];
+        }
+
+        long totalSize = fragment.Length;
+        double targetChunkSize = (double)totalSize / desiredGroups;
+
+        // 3. Определить индексы записей, на которых будут заканчиваться группы (кроме последней)
+        List<int> groupEndIndices = new List<int>();
+        for (int g = 1; g < desiredGroups; g++)
+        {
+            double targetCum = g * targetChunkSize;
+            int idx = FindClosestIndex(cumulativeSizes, targetCum);
+            groupEndIndices.Add(idx);
+        }
+
+        // 4. Сформировать части, используя накопленные границы
+        var parts = new List<byte[]>(desiredGroups);
+        int prevEndByte = 0;
+        foreach (int idx in groupEndIndices)
+        {
+            int currentEndByte = endPositions[idx];
+            byte[] part = new byte[currentEndByte - prevEndByte];
+            Array.Copy(fragment, prevEndByte, part, 0, part.Length);
+            parts.Add(part);
+            prevEndByte = currentEndByte;
+        }
+
+        // Последняя часть – от prevEndByte до конца фрагмента
+        if (prevEndByte < fragment.Length)
+        {
+            byte[] lastPart = new byte[fragment.Length - prevEndByte];
+            Array.Copy(fragment, prevEndByte, lastPart, 0, lastPart.Length);
+            parts.Add(lastPart);
+        }
+
+        return parts;
+    }
+
+    // Вспомогательный метод для бинарного поиска ближайшего индекса
+    private static int FindClosestIndex(long[] cumulative, double target)
+    {
+        int lo = 0;
+        int hi = cumulative.Length - 1;
+        while (lo <= hi)
+        {
+            int mid = lo + (hi - lo) / 2;
+            if (cumulative[mid] == target)
+                return mid;
+            if (cumulative[mid] < target)
+                lo = mid + 1;
+            else
+                hi = mid - 1;
+        }
+
+        if (lo >= cumulative.Length) return hi;
+        if (hi < 0) return lo;
+
+        double diffLo = cumulative[lo] - target;
+        double diffHi = target - cumulative[hi];
+        return diffLo < diffHi ? lo : hi;
     }
 
     public async Task<List<int>> Encode(string text)
@@ -346,7 +464,7 @@ public class BPETokenizer
         return true;
     }
 
-    private List<ProcessedChunkResult> ProcessChunks(List<ReadOnlyMemory<byte>> chunks,
+    private void ProcessChunks(List<byte[]> chunks,
         byte[] tokenSeparator,
         int maxConcurrent = 32)
     {
@@ -356,20 +474,19 @@ public class BPETokenizer
             MaxDegreeOfParallelism = maxConcurrent
         };
 
-        var chunksResults = new List<ProcessedChunkResult>(chunks.Count);
-        var lockobj = new object();
+        var lockObj = new object();
+        var totalChunks = chunks.Count();
+        var counter = 0;
 
         Parallel.ForEach(partitioner, options, chunk =>
         {
-            var chunkResult = ProcessChunk(chunk, tokenSeparator);
-
-            lock(lockobj)
+            ProcessChunk(chunk, tokenSeparator);
+            counter++;
+            lock (lockObj)
             {
-                chunksResults.Add(chunkResult);
+                AdvancedConsole.WriteProgress(counter, totalChunks, "Progress:", 60, ConsoleMessageType.Error);
             }
         });
-
-        return chunksResults;
     }
 
     private List<ReadOnlyMemory<byte>> GetChunkBlocks(ReadOnlyMemory<byte> chunk, byte[] tokenSeparator)
@@ -406,7 +523,7 @@ public class BPETokenizer
         return result;
     }
 
-    private ProcessedChunkResult ProcessChunk(ReadOnlyMemory<byte> chunk, byte[] tokenSeparator)
+    private void ProcessChunk(byte[] chunk, byte[] tokenSeparator)
     {
         var chunkBlocks = GetChunkBlocks(chunk, tokenSeparator); 
         var capacity = chunk.Length / 5;
@@ -434,7 +551,8 @@ public class BPETokenizer
             }
         }
 
-        return new ProcessedChunkResult(preTokens, tokenPairData);
+        BulkInsertPreTokens(preTokens);
+        BulkInsertTokenPairData(tokenPairData);
     }
 
     private void ProcessTokenPairs(
