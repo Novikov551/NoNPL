@@ -14,7 +14,7 @@ public static class AdvancedConsole
         Console.ForegroundColor = previousColor;
     }
 
-    public static void WriteLine(string message, 
+    public static void WriteLine(string message,
         ConsoleMessageType type = ConsoleMessageType.Default)
     {
         var previousColor = Console.ForegroundColor;
@@ -123,6 +123,16 @@ public static class AdvancedConsole
             ConsoleMessageType.Debug => ConsoleColor.Magenta,
             _ => ConsoleColor.Gray
         };
+    }
+
+    internal static void Clear()
+    {
+        Console.Clear();
+    }
+
+    internal static void ReadKey()
+    {
+        Console.ReadKey();
     }
 }
 

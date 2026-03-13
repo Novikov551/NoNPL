@@ -41,7 +41,7 @@ public class BPETokenizer
         _vocabStorage = new VocabStorage(resultsFolderLocation, SerializerFactory.Create(fileFormat));
     }
 
-    public async Task LoadVocab(CancellationToken ct = default)
+    public async Task LoadVocabAsync(CancellationToken ct = default)
     {
         var (vocab, merges, latestVersion) = await _vocabStorage.LoadLatestAsync(ct);
 
@@ -219,7 +219,7 @@ public class BPETokenizer
         return diffLo < diffHi ? lo : hi;
     }
 
-    public async Task<List<int>> Encode(string text)
+    public async Task<List<int>> EncodeAsync(string text)
     {
         var stopwatch = Stopwatch.StartNew();
 
